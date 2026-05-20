@@ -1,6 +1,6 @@
 Commercial License Agreement
 
-Copyright (c) 2013-2025 [Magrino Bini, Paola Apruzzese, Inventzia Science and Technology Ltd.]
+Copyright (c) 2013-2026 Magrino Bini, Paola Apruzzese, Inventzia Science and Technology Ltd.
 
 This software is available under a dual licensing model:
 
