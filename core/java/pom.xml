@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Inventzia-Commercial
+  Copyright (c) 2013-2026 Magrino Bini, Paola Apruzzese, Inventzia Science and Technology Ltd.
+
+  This file is part of pulse-beacon.
+
+  pulse-beacon is dual-licensed:
+    - Under the GNU Affero General Public License v3.0 or later (see LICENSE-AGPL-3.0).
+    - Under a commercial license (see LICENSE-COMMERCIAL.txt).
+      Contact operations@inventzia.com.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.inventzia.beacon</groupId>
+    <artifactId>pulse-beacon-core</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <name>pulse-beacon-core</name>
+    <description>
+        Domain-agnostic event-driven engine core for pulse-beacon: bus interfaces,
+        time machine, gateway and engine abstract bases.
+    </description>
+    <inceptionYear>2013</inceptionYear>
+
+    <organization>
+        <name>Inventzia Science and Technology Ltd.</name>
+        <url>https://inventzia.com</url>
+    </organization>
+
+    <licenses>
+        <license>
+            <name>GNU Affero General Public License v3.0 or later</name>
+            <url>https://www.gnu.org/licenses/agpl-3.0.html</url>
+            <distribution>repo</distribution>
+        </license>
+        <license>
+            <name>Inventzia Commercial License</name>
+            <distribution>manual</distribution>
+            <comments>Contact operations@inventzia.com</comments>
+        </license>
+    </licenses>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.release>17</maven.compiler.release>
+    </properties>
+</project>
