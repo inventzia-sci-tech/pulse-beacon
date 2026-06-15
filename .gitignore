@@ -1,0 +1,8 @@
+# Ignore all private files
+*private*
+
+# Maven build output (any module depth)
+target/
+
+# Generated log files
+logs/

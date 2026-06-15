@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Inventzia-Commercial
+  Copyright (c) 2013-2026 Magrino Bini, Paola Apruzzese, Inventzia Science and Technology Ltd.
+
+  Default Logback configuration for pulse-beacon. Each pulse-beacon component
+  logs under its own name (the %logger), e.g. "engine", "reader-1", "beater".
+  Consumers embedding pulse-beacon-core can override this by supplying their own
+  logback.xml (or any SLF4J backend) on the classpath.
+
+  Output goes to BOTH the console and a rolling file (logs/pulse-beacon.log).
+  The log directory can be relocated by setting the system property
+  -Dpulse.log.dir=/path/to/logs (defaults to "logs" under the working dir).
+-->
+<configuration>
+
+    <property name="LOG_DIR" value="${pulse.log.dir:-logs}"/>
+    <property name="PATTERN"
+              value="%d{yyyy-MM-dd HH:mm:ss.SSS} [%-5level] %-18({%logger{0}}) : %msg%n"/>
+
+    <!-- Destination 1: the console. -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>${PATTERN}</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Destination 2: a rolling file, rotated daily and by size, 14 days kept. -->
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${LOG_DIR}/pulse-beacon.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_DIR}/pulse-beacon.%d{yyyy-MM-dd}.%i.log</fileNamePattern>
+            <maxFileSize>50MB</maxFileSize>
+            <maxHistory>14</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>${PATTERN}</pattern>
+        </encoder>
+    </appender>
+
+    <!-- The root logger fans out to both destinations. -->
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="FILE"/>
+    </root>
+
+    <!-- Raise to DEBUG to see engine dispatch and time-machine internals:
+    <logger name="engine" level="DEBUG"/>
+    <logger name="engine.timemachine" level="DEBUG"/>
+    -->
+
+</configuration>

@@ -59,34 +59,49 @@ implementation detail of each role.
 ### Relationship to pulse-data
 
 [pulse-data](https://github.com/inventzia-sci-tech/pulse-data) is the single source of truth for
-event schemas. YAML definitions are code-generated into Java classes (via `jsonschema2pojo`) and
-Python classes (via a custom generator). Generated Java event classes implement
-`com.inventzia.beacon.core.Event`; generated Python classes are Pydantic models. Gateways handle
-serialisation and deserialisation — actors never see raw bytes.
+data types. YAML schemas are code-generated into Java records and Python Pydantic models. Generated
+Java classes implement `com.inventzia.pulse.data.datum.Datum` — the two-method routing contract
+(`getDatumKey()`, `getDatumTime()`) the bus needs; pulse-beacon routes `Datum`, nothing narrower.
+
+**Serialization lives in pulse-data, not here.** Because pulse-data owns the types and schemas, it
+also owns how a `Datum` becomes JSON, via its `DatumCodec` — a shared singleton
+(`DatumCodec.instance()`) whose whole surface is `toJson(Datum)` / `fromJson(json, type)`. It is
+configured once for every field type the schemas use (JSR-310 `java.time` as ISO-8601,
+`BigDecimal`, ignore-unknown-properties), and hides the JSON engine entirely:
+**pulse-beacon does not reference Jackson at all.**
+
+Concretely, the JSONL gateways take no serializer argument — they use the singleton:
+
+```java
+new JsonlReaderGateway<>("reader", topic, keys, path, start, end);
+```
+
+Gateways handle serialisation at the boundary; actors only ever see typed `Datum` values, never
+raw bytes.
 
 ## Current status
 
-Early development. The `core/java` module currently contains:
+The `core/java` module is functional end-to-end in both operating modes (a historic,
+compressed-time replay and a real-time run), covered by an integration test.
 
-| Interface / Type | Status |
-|-----------------|--------|
-| `Event` — base interface for all events | ✅ |
-| `Topic<E>` — typed routing identity | ✅ |
-| `Pub`, `Sub`, `Actor` — publisher, subscriber, actor | ✅ |
-| `GatewayStatus` — lifecycle state enum | ✅ |
-| `Gateway` — gateway contract | ✅ |
-| `OperatingMode`, `ReportLevel` enums | ⏳ |
-| `TimeEvent` — transport record | ⏳ |
-| `AbstractGateway` — base implementation | ⏳ |
-| `TimeMachine` | ⏳ |
-| `AbstractEngine`, `MultiClientEngine` | ⏳ |
-
-Concrete gateways (ZMQ socket, file, heartbeat) and the Python core package are planned but not
-yet started.
+| Area | Components | Status |
+|------|-----------|--------|
+| Bus contracts | `Topic<P extends Datum>`, `Pub`, `Sub`, `Actor` | ✅ |
+| Gateway | `Gateway`, `AbstractGateway`, `GatewayStatus`, `OperatingMode` | ✅ |
+| Engine | `AbstractEngine`, `MultiClientEngine`, `EngineCommand` | ✅ |
+| Time machine | `TimeMachine`, `TimeEvent`, `TimeEventComparator` | ✅ |
+| Actors | `AbstractActor` (publish helper + lifecycle hooks) | ✅ |
+| Logging | `Reporter`, `Slf4jReporter`, `ComponentReporter` (SLF4J/Logback) | ✅ |
+| File gateways | `gateway.file.JsonlReaderGateway`, `JsonlWriterGateway` | ✅ |
+| Periodic | `gateway.periodic.HeartBeatGateway` | ✅ |
+| Examples | `core.examples.*` (print/echo, historic, real-time, market-data) | ✅ |
+| Socket transport | ZMQ gateways | ⏳ planned |
+| Cross-language | in-process / out-of-process Python bridge | ⏳ planned |
+| Python core | `pulse_beacon_core` package | ⏳ planned |
 
 ## Requirements
 
-- Java 17 or later (uses records, sealed types)
+- Java 17 or later (uses records, switch/pattern matching)
 - Maven 3.8+
 
 ## Licensing
