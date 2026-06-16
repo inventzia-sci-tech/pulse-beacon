@@ -37,8 +37,8 @@ import java.util.concurrent.Semaphore;
  * </blockquote>
  *
  * <p>This guarantees that events are processed in causal order regardless of
- * thread scheduling or I/O jitter. It is the property that makes a backtest
- * reproducible and a live run equivalent to its replay.
+ * thread scheduling or I/O jitter. It is the property that makes a historical
+ * simulation replay reproducible and a live run equivalent to its replay.
  *
  * <h2>Per-gateway flow control</h2>
  * <p>Each clock-driving gateway is issued a single write permit (a binary
