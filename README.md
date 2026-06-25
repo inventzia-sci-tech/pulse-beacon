@@ -111,9 +111,9 @@ The runnable examples in `core/java/…/beacon/core/examples/` are the fastest w
 platform work. Each has a `main`; run any from your IDE, or from the CLI:
 
 ```bash
-# from core/java/ (uses the project's JDK + Maven; here via the conda env)
-conda run -n pulse-jdk mvn -q -o dependency:build-classpath -Dmdep.outputFile=target/cp.txt
-conda run -n pulse-jdk java -cp "target/classes:$(cat target/cp.txt)" \
+# from core/java/ (the `pulse` env carries the JDK + Maven; see Requirements)
+conda run -n pulse mvn -q -o dependency:build-classpath -Dmdep.outputFile=target/cp.txt
+conda run -n pulse java -cp "target/classes:$(cat target/cp.txt)" \
     com.inventzia.pulse.beacon.core.examples.HistoricRunExample
 ```
 
@@ -153,16 +153,24 @@ test (`HistoricalRunTest`, 20× repeated). The cross-language bridge is in progr
 | Examples | `core.examples.*` (historic, market-data, real-time) | ✅ |
 | Type registry + tagged codec | pulse-data `DatumTypeRegistry` + `DatumCodec.toTaggedJson/fromTaggedJson` (both languages) | ✅ |
 | Cross-language Java half | `core.crosslanguage.CrossLanguageActor` / `CrossLanguageGateway` | ✅ |
-| Python `beacon.core` | actor/gateway bases, channel, dispatch, `CrossLanguageStreamer` | ⏳ in progress |
-| Python-host launcher | JPype historical run re-creating `HistoricRunExample` | ⏳ in progress |
+| Python `beacon.core` | actor/gateway bases, channel, dispatch, `CrossLanguageStreamer` | ✅ |
+| Python-host launcher | JPype historical run re-creating `HistoricRunExample` (parity verified) | ✅ |
 | Java-host launcher | JEP | ⏳ planned |
 | Socket transport | ZMQ gateways | ⏳ planned |
 
 ## Requirements
 
-- Java 17 or later (uses records, switch/pattern matching)
-- Maven 3.8+
-- For Python components: Python 3.11+, plus `jpype1` (Python-host); see the cross-language spec.
+Everything runs from one shared conda env, `pulse`. It is layered: pulse-data declares the minimal
+base (Python 3.11 + the generators/models), and pulse-beacon enriches it with a JDK 17 + Maven (to
+build the Java and to back JPype) and the `jpype1` bridge:
+
+```bash
+conda env create -f pulse-data/py_environment.yml      # creates `pulse` (base)
+conda env update -f pulse-beacon/core/python/py_environment.yml   # enriches it
+```
+
+The bundled JDK means `JAVA_HOME` is set automatically — no manual export. (Working only with
+pulse-data? The base env alone is enough.)
 
 ## Licensing
 

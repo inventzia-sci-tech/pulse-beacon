@@ -1,1 +1,8 @@
 /target/
+
+# Staged release jars (Maven build artifacts: module jar + runtime deps).
+# Regenerate with:
+#   mvn package -DskipTests && \
+#   mvn dependency:copy-dependencies -DoutputDirectory=jars -DincludeScope=runtime && \
+#   cp target/pulse-beacon-core-*.jar jars/
+/jars/

@@ -235,28 +235,36 @@ core/python/inventzia/pulse/beacon/core/
     message_feed_gateway.py  # source BeaconGateway: yields TextMessage events in time order
 ```
 
-`cross_language_streamer.py` — both loops, same code both directions:
+`cross_language_streamer.py` — both loops, same code both directions (as built):
 
 ```python
 class CrossLanguageStreamer:
-    def __init__(self, java_endpoint, component, channel):
-        self._jp, self._component, self._channel = java_endpoint, component, channel
+    def __init__(self, endpoint, component, channel=None):
+        self._endpoint, self._component = endpoint, component
+        if channel is not None and hasattr(component, "bind"):
+            component.bind(channel)              # so on_event handlers can publish
 
-    def run_consume(self):                       # Java -> Python (actor, or gateway-sink)
+    def run_consume(self):                       # engine -> Python (actor, or gateway-sink)
         while True:
-            ev = self._jp.takeNext()             # blocks; CrossLanguageEvent or STOP sentinel
-            if ev is STOP:
+            ev = self._endpoint.takeNext()       # blocks; a CrossLanguageEvent
+            if event_kind(ev) == "END":
                 break
             try:
-                dispatch(self._component, self._channel, ev.topic_name, ev.datum_json)
+                dispatch_consume(self._component, ev)   # decode tagged JSON + route by Kind
             finally:
-                self._jp.ackDone()               # release the engine's dispatch thread
+                self._endpoint.ackDone()         # release the engine's dispatch thread
 
-    def run_produce(self):                       # Python -> Java (gateway-source)
-        for topic, datum in self._component.produce():
-            self._jp.offerNext(topic.name, to_json(datum))   # blocks until permit-accepted
-        self._jp.finish()
+    def run_produce(self):                       # Python -> engine (gateway-source)
+        for topic_name, datum in self._component.produce():
+            self._endpoint.offerNext(topic_name, to_tagged_json(datum))  # blocks until accepted
+        self._endpoint.finish()
 ```
+
+`dispatch_consume(component, event)` reads the event's `Kind`: `DATA` → decode the tagged JSON to a
+native datum and call `on_event(topic_name, datum)`; `START`/`STOP` → the lifecycle hooks; `END` is
+handled by the loop above. The channel is *bound* to the component (mirroring Java's
+`AbstractActor.bind`) rather than passed into `dispatch`, so `publish` reads naturally inside
+`on_event`. Topics cross as names (strings); the Java side owns the `Topic` objects and types.
 
 A bidirectional gateway launches `run_produce` and `run_consume` on two threads — the modern
 equivalent of the old `PythonGateway`'s `run_outgoing_data` / `run_incoming_data` pair.
@@ -314,6 +322,28 @@ Python components — only the bootstrap differs.
 ---
 
 ## 8. Deliverables for milestone 1 (Python-host historical; consumers + source gateway)
+
+**STATUS: DONE (2026-06-16).** All six items built; the launcher runs to `COMPLETE` and the Python
+printer receives exactly the 10-event, event-time-ordered merge of the all-Java `HistoricRunExample`
+(`PARITY OK`). The Python `EchoConsumer` publishes back through the channel to the Java sink.
+
+Run recipe (from `New/`, in the shared `pulse` env — its bundled JDK sets `JAVA_HOME`, so none is
+exported manually):
+
+```bash
+export PYTHONPATH="pulse-data/datum/python:pulse-data/schemas/schemas_py:pulse-beacon/core/python"
+conda run -n pulse python pulse-beacon/core/python/inventzia/pulse/beacon/core/examples/historic_run_jpype.py
+```
+
+Jars are staged into `core/java/jars/` (build artifacts) from `core/java/` with:
+`conda run -n pulse mvn -o package -DskipTests` → `conda run -n pulse mvn -o dependency:copy-dependencies -DoutputDirectory=jars -DincludeScope=runtime` → `cp target/pulse-beacon-core-*.jar jars/`.
+
+Two gotchas learned, now handled:
+- **JPype string conversion.** Java `String` returns are *not* Python `str` by default, which breaks
+  `json.loads` on the tagged JSON. The bootstrap starts the JVM with `convertStrings=True`.
+- **Streamer resilience.** A raising consume handler must not kill the streamer thread — the engine's
+  dispatch thread is blocked awaiting its ack, so a dead streamer deadlocks the run. `run_consume`
+  catches per-event, logs, acks, and continues.
 
 1. Java `core/crosslanguage/`: `CrossLanguageActor`, `CrossLanguageGateway`, `CrossLanguageEvent`,
    a cross-language exception.
