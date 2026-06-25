@@ -350,13 +350,27 @@ Two gotchas learned, now handled:
 2. pulse-data: generated `TYPE_ID → class` registry in Java **and** Python, and `DatumCodec`
    emitting the `TYPE_ID` envelope field + a self-describing `fromJson(json)` (see D2).
 3. pulse-beacon Python `core/python/inventzia/pulse/beacon/core/`: `actor.py`, `gateway.py`,
-   `channel.py`, `dispatch.py`, `crosslanguage/cross_language_streamer.py`,
-   `crosslanguage/jpype_host.py`.
+   `channel.py`, `dispatch.py`, `reporter.py` (the Python mirror of the Java `Reporter` facade, so
+   both languages log identically and component bases ship a configured logger), and
+   `crosslanguage/cross_language_streamer.py`, `crosslanguage/jpype_host.py`. Lifecycle hooks are
+   named to match Java (`on_startup` / `on_shutdown`).
 4. Python components: `print_consumer.py`, `echo_consumer.py`, `message_feed_gateway.py` (source).
 5. Launcher `historic_run_jpype.py`: re-creates `HistoricRunExample` with the Python feed driving
    the clock and Python consumers receiving — asserts the consumers saw the same events as the Java
    run.
 6. Conda env adding `jpype1` (`jep` deferred to the Java-host milestone).
+
+Follow-ups landed since milestone 1:
+- **Parity as a test.** `historic_run_jpype.run()` returns `(received, status)`; `tests/test_historic_run_jpype.py`
+  (pytest) asserts `received == EXPECTED` and `COMPLETE`, skipping if the jars are not staged. A
+  `tests/conftest.py` puts the two repo roots on `sys.path` (the test-time mirror of
+  `PYTHONPATH="pulse-beacon:pulse-data"`).
+- **Real-time counterpart.** `realtime_run_jpype.py` re-creates the Java `RealTimeHeartbeatExample`
+  (three wall-clock heartbeats → a Python `PrintConsumer`), proving the bridge under REAL_TIME, not
+  just compressed-time replay. It also wires the *reverse* direction: a Python `EchoConsumer`
+  re-publishes each beat on an `echo` topic that a Java `PrintGateway` sink consumes, so data crosses
+  the boundary both ways in one live run. Being wall-clock paced, it asserts COMPLETE + beats seen
+  rather than exact parity.
 
 Java-host milestone (next): `HistoricRunJepExample.java` + `crosslanguage/jep_host.py`, reusing 1–4
 unchanged. Sink-only gateway example can follow once a Java→external example target exists.

@@ -24,8 +24,11 @@ asserts that the Python printer received exactly the merged, event-time-ordered
 sequence the all-Java run produces.
 
 Run (from New/, in the shared `pulse` env — its bundled JDK sets JAVA_HOME):
-    export PYTHONPATH="pulse-data/datum/python:pulse-data/schemas/schemas_py:pulse-beacon/core/python"
+    export PYTHONPATH="pulse-beacon:pulse-data"
     conda run -n pulse python pulse-beacon/core/python/inventzia/pulse/beacon/core/examples/historic_run_jpype.py
+
+The parity check is also exercised as a test (``run()`` returns the recorded
+events and final engine status): see ``core/python/tests/test_historic_run_jpype.py``.
 """
 
 import threading
@@ -75,7 +78,14 @@ def _await_status(engine, target_name: str, timeout_s: float) -> None:
     raise TimeoutError(f"engine did not reach {target_name}; was {engine.status().name()}")
 
 
-def main() -> int:
+def run() -> tuple[list[tuple[str, int]], str]:
+    """Build the topology, run to completion, and return ``(received, status)``.
+
+    ``received`` is the ``(topic_name, datum_time)`` sequence the Python printer
+    saw; ``status`` is the engine's final status name. Importable so a test can
+    assert parity (``received == EXPECTED`` and ``status == "COMPLETE"``) without
+    the CLI wrapper. Idempotent w.r.t. the JVM (``start_jvm`` reuses a running one).
+    """
     configure_logging(ReportLevel.INFO)
     jpype_host.start_jvm()
 
@@ -169,16 +179,22 @@ def main() -> int:
     for t in (t_feed, t_print, t_echo):
         t.join(5.0)
 
-    LOG.info(f"engine status: {engine.status().name()}; printer received {len(received)} events")
+    status = str(engine.status().name())
+    LOG.info(f"engine status: {status}; printer received {len(received)} events")
+    return received, status
+
+
+def main() -> int:
+    received, status = run()
 
     # --- parity assertions ----------------------------------------------
     ok = True
     if received != EXPECTED:
         ok = False
         LOG.severe(f"PARITY MISMATCH\n  expected: {EXPECTED}\n  received: {received}")
-    if str(engine.status().name()) != "COMPLETE":
+    if status != "COMPLETE":
         ok = False
-        LOG.severe(f"engine did not COMPLETE: {engine.status().name()}")
+        LOG.severe(f"engine did not COMPLETE: {status}")
 
     print("PARITY OK" if ok else "PARITY FAILED")
     return 0 if ok else 1

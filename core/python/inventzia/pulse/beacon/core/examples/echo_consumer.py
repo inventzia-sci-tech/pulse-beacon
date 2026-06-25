@@ -34,5 +34,5 @@ class EchoConsumer(BeaconActor):
         # Re-stamp the echo at the source event's time, carrying a text summary.
         summary = f"{topic_name} :: {datum!r}"
         echo = TextMessage(msgKey=self._echo_key, msgTime=datum.datum_time, text=summary)
-        self.log.large_info(lambda: f"echo {topic_name} -> {self._echo_topic_name}")
+        self.log.info(f"echo {topic_name} -> {self._echo_topic_name}")
         self.publish(self._echo_topic_name, echo)

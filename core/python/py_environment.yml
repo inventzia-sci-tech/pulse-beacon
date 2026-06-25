@@ -28,6 +28,7 @@ channels:
 dependencies:
   - openjdk=17        # JVM: builds the Java (with Maven) and backs JPype at runtime
   - maven             # Java build tool
+  - pytest            # runs the cross-language parity test (tests/test_historic_run_jpype.py)
   - pip
   - pip:
       - jpype1        # in-process Python <-> Java bridge

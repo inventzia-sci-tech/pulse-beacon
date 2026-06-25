@@ -112,29 +112,31 @@ class ComponentReporter:
 
     def large_info(self, message: Union[str, Callable[[], str]]) -> None:
         """Verbose diagnostics (≈ debug). Pass a callable to defer building hot-path messages."""
-        if callable(message):
-            if self._sink.is_enabled(self._source, ReportLevel.LARGEINFO):
-                self._sink.report(_now(), self._source, message(), ReportLevel.LARGEINFO)
-        else:
-            self._emit(ReportLevel.LARGEINFO, message)
+        self._emit(ReportLevel.LARGEINFO, message)
 
-    def info(self, message: str) -> None:
+    def info(self, message: Union[str, Callable[[], str]]) -> None:
         """Normal operational information."""
         self._emit(ReportLevel.INFO, message)
 
-    def warn(self, message: str) -> None:
+    def warn(self, message: Union[str, Callable[[], str]]) -> None:
         """Something unexpected but recoverable."""
         self._emit(ReportLevel.WARNING, message)
 
-    def severe(self, message: str) -> None:
+    def severe(self, message: Union[str, Callable[[], str]]) -> None:
         """A serious error that may affect correctness or data integrity."""
         self._emit(ReportLevel.SEVERE, message)
 
-    def fatal(self, message: str) -> None:
+    def fatal(self, message: Union[str, Callable[[], str]]) -> None:
         """An unrecoverable condition."""
         self._emit(ReportLevel.FATAL, message)
 
-    def _emit(self, level: ReportLevel, message: str) -> None:
+    def _emit(self, level: ReportLevel, message: Union[str, Callable[[], str]]) -> None:
+        # Any level may take a callable to defer building the message; if the level
+        # is disabled the callable is never invoked (and never logged as its repr).
+        if callable(message):
+            if not self._sink.is_enabled(self._source, level):
+                return
+            message = message()
         self._sink.report(_now(), self._source, message, level)
 
 

@@ -70,7 +70,7 @@ pulse-beacon/
 │   │        ├── crosslanguage/            ← CrossLanguageActor/Gateway/Event (Java half of the bridge)
 │   │        └── examples/                 ← runnable examples (see below)
 │   └── python/   ← `inventzia.pulse.beacon.core`: Python actor/gateway bases,
-│                   channel, dispatch, CrossLanguageStreamer  (in progress)
+│                   channel, dispatch, Reporter logging facade, CrossLanguageStreamer
 └── docs/         ← design specs (e.g. the cross-language in-process spec)
 ```
 
@@ -136,10 +136,26 @@ The example data lives in `core/java/src/main/resources/examples/data/` (the JSO
 fixtures), stamped in the past so the historical runs are deterministic and finish as fast as the
 data merges.
 
+**Python-host (cross-language) counterparts** live under
+`core/python/inventzia/pulse/beacon/core/examples/` and re-create the Java runs with Python
+components over the in-process JPype bridge: `historic_run_jpype.py` (the historical replay, with
+Python actors and a Python source gateway) and `realtime_run_jpype.py` (the real-time heartbeat run,
+which also shows the reverse direction: a Python echo actor publishing back to a Java sink gateway).
+Both need the Java module's jars staged in `core/java/jars/` and `PYTHONPATH="pulse-beacon:pulse-data"`
+(see [the cross-language spec](./docs/cross-language-python-inprocess.md)). The historical run's
+parity is also asserted as a pytest:
+
+```bash
+conda run -n pulse python -m pytest core/python/tests/test_historic_run_jpype.py
+```
+
 ## Current status
 
 The `core/java` module is functional end-to-end in both operating modes, covered by an integration
-test (`HistoricalRunTest`, 20× repeated). The cross-language bridge is in progress.
+test (`HistoricalRunTest`, 20× repeated). The in-process cross-language bridge is working in the
+Python-host direction: the JPype launcher re-creates `HistoricRunExample` with Python actors and a
+Python source gateway, and passes parity (the Python printer sees exactly the all-Java event-time
+merge). The Java-host (JEP) launcher and the ZMQ socket transport remain planned.
 
 | Area | Components | Status |
 |------|-----------|--------|
@@ -148,13 +164,14 @@ test (`HistoricalRunTest`, 20× repeated). The cross-language bridge is in progr
 | Engine | `AbstractEngine`, `MultiClientEngine`, `EngineCommand` | ✅ |
 | Time machine | `TimeMachine`, `TimeEvent`, `TimeEventComparator` | ✅ |
 | Actors | `AbstractActor` (publish helper + lifecycle hooks) | ✅ |
-| Logging | `Reporter`, `Slf4jReporter`, `ComponentReporter` (SLF4J/Logback) | ✅ |
+| Logging | `Reporter`, `Slf4jReporter`, `ComponentReporter` (SLF4J/Logback), mirrored as a Python facade so Java and Python components log identically | ✅ |
 | File / periodic gateways | `gateway.file.Jsonl*`, `gateway.periodic.HeartBeatGateway` | ✅ |
 | Examples | `core.examples.*` (historic, market-data, real-time) | ✅ |
 | Type registry + tagged codec | pulse-data `DatumTypeRegistry` + `DatumCodec.toTaggedJson/fromTaggedJson` (both languages) | ✅ |
 | Cross-language Java half | `core.crosslanguage.CrossLanguageActor` / `CrossLanguageGateway` | ✅ |
-| Python `beacon.core` | actor/gateway bases, channel, dispatch, `CrossLanguageStreamer` | ✅ |
-| Python-host launcher | JPype historical run re-creating `HistoricRunExample` (parity verified) | ✅ |
+| Python `beacon.core` | actor/gateway bases, channel, dispatch, `Reporter`/`ComponentReporter` mirror, `CrossLanguageStreamer` | ✅ |
+| Python-host launchers | JPype historical run (`historic_run_jpype`, parity verified) and real-time run (`realtime_run_jpype`, mirrors `RealTimeHeartbeatExample`) | ✅ |
+| Cross-language parity test | `tests/test_historic_run_jpype.py` (pytest; asserts the Python printer reproduces the all-Java merge) | ✅ |
 | Java-host launcher | JEP | ⏳ planned |
 | Socket transport | ZMQ gateways | ⏳ planned |
 
