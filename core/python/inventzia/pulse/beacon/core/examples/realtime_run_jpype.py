@@ -50,9 +50,9 @@ from core.python.inventzia.pulse.beacon.core.reporter import ComponentReporter, 
 LOG = ComponentReporter("realtime-run-jpype")
 
 WINDOW_MS = 30_000   # 30-second run, mirroring the Java example.
-# Start ahead of "now" so the engine initialises before the window opens (-> REAL_TIME).
-# The buffer must exceed cold-start cost (class loading + first Logback init); too small
-# and "now" overshoots start, landing the engine in the (unimplemented) MIXED mode.
+# Start a little ahead of "now" so the heartbeats land in the future and the run is
+# wall-clock paced. Overshooting startTime is harmless now (lenient mode selection treats
+# a now-inside-window run as REAL_TIME, not the throwing MIXED) — this is for demo timing.
 LEAD_MS = 8_000
 
 

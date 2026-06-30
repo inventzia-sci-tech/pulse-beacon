@@ -16,10 +16,7 @@ import com.inventzia.pulse.data.datum.Datum;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
-import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -55,10 +52,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <p>The engine injects {@link EngineCommand} events onto the bus to
  * trigger actor lifecycle calls at the right simulation time:
  * <ul>
- *   <li>In {@code COMPRESSED_TIME}, {@code startUpActors} is called directly
- *       at {@code startTime} before the dispatch loop begins.</li>
- *   <li>In {@code REAL_TIME}, a {@code STARTUP} command is scheduled via a
- *       single-thread executor to fire at {@code startTime}.</li>
+ *   <li>In <b>both</b> modes, consumers are started before the dispatch loop
+ *       begins (carrying the logical {@code startTime}) and {@code startUpDone}
+ *       is set, so no event is ever delivered before startup. Starting eagerly
+ *       in {@code REAL_TIME} too avoids a race where an event arriving at
+ *       {@code startTime} could be dispatched before a scheduled startup signal.</li>
  *   <li>A {@code SHUTDOWN} command is enqueued when end time is reached or
  *       all publisher gateways have disconnected.</li>
  * </ul>
@@ -182,9 +180,27 @@ public abstract class AbstractEngine extends AbstractGateway {
      * single place that delivers each event to its subscriber gateways and
      * actors. Doing delivery only there keeps ordering deterministic and avoids
      * double-delivery.
+     *
+     * <h2>Causality</h2>
+     * <p>An actor may only publish events at or after the simulation time it is
+     * currently handling. A <em>same-tick</em> derived event (equal time) and a
+     * future event are allowed; a publish with an event time <em>before</em> the
+     * event being dispatched is acausal — it would let a retroactive event jump
+     * ahead of work the engine has already done, breaking deterministic
+     * event-time ordering — and is rejected with a {@link CausalityException}.
+     * (Gateway sources reach the bus through {@link #onEvent} directly, not here,
+     * so this applies only to actor publishes.)
      */
     @Override
     public <P extends Datum> void publish(Topic<P> topic, P payload) {
+        long current = lastEventTime;
+        if (current >= 0 && payload.getDatumTime() < current) {
+            throw new CausalityException(
+                    "acausal publish on '" + topic.name() + "' key=" + payload.getDatumKey()
+                    + ": event time " + payload.getDatumTime()
+                    + " precedes the current simulation time " + current
+                    + " (publish at or after the current tick; same-tick derived events are allowed)");
+        }
         onEvent(topic, payload);
     }
 
@@ -271,7 +287,7 @@ public abstract class AbstractEngine extends AbstractGateway {
      *
      * <ol>
      *   <li>Initialise and connect.</li>
-     *   <li>Start actors (compressed time: immediately; real time: at startTime).</li>
+     *   <li>Start consumers before the dispatch loop (the deterministic start barrier).</li>
      *   <li>Run the dispatch loop until shutdown.</li>
      *   <li>Shut down actors and disconnect.</li>
      * </ol>
@@ -286,28 +302,101 @@ public abstract class AbstractEngine extends AbstractGateway {
             switch (operatingMode()) {
                 case COMPRESSED_TIME -> {
                     startUpActors(startTime());
-                    startUpDone.set(true);   // actors are up; allow dispatch
+                    startUpGateways(startTime());   // engine-driven sink lifecycle (barrier)
+                    startUpDone.set(true);          // consumers are up; allow dispatch
                     processEventQueueSim();
                 }
                 case REAL_TIME -> {
-                    scheduleStartup();
+                    // Start consumers deterministically before the dispatch loop,
+                    // exactly as in compressed time. Previously a STARTUP command
+                    // was scheduled onto the live queue to fire at startTime, but
+                    // that raced real producers: an event arriving at the same
+                    // instant could be dequeued first and dropped (startUpDone
+                    // still false). onStartUp carries the logical start time, so
+                    // running it eagerly here (and gating dispatch on startUpDone)
+                    // keeps the start barrier without the race.
+                    startUpActors(startTime());
+                    startUpGateways(startTime());
+                    startUpDone.set(true);
                     processEventQueueLive();
                 }
                 default -> throw new UnsupportedOperationException(
                         "Operating mode " + operatingMode() + " not supported by engine");
             }
 
-            shutDownActors(lastEventTime > 0 ? lastEventTime : endTime());
+            long shutdownTime = lastEventTime > 0 ? lastEventTime : endTime();
+            shutDownActors(shutdownTime);
+            shutDownGateways(shutdownTime);   // engine-driven sink lifecycle (barrier)
             disconnect();
             setStatus(GatewayStatus.COMPLETE);
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            abortCleanup();
             setStatus(GatewayStatus.STOPPED);
         } catch (Exception e) {
+            abortCleanup();
             setStatus(GatewayStatus.STOPPED);
             throw new RuntimeException("Engine terminated with error", e);
         }
+    }
+
+    /**
+     * Best-effort teardown after an abnormal exit from the dispatch loop. Unlike
+     * the normal path (which drains naturally and disconnects), here the gateway
+     * threads are still running, so we must both unblock and disconnect them:
+     *
+     * <ul>
+     *   <li>{@link TimeMachine#shutdown()} releases every clock-driver's write
+     *       permit, so a producer blocked in {@code addEvent} (waiting on a
+     *       permit the now-dead consumer will never release) unblocks and bails;</li>
+     *   <li>{@link #abortConsumers()} ends every cross-language consumer's streamer
+     *       loop (the normal {@code onShutDown} path does not run on abort), so a
+     *       sink/actor blocked in {@code takeNext()} does not hang forever;</li>
+     *   <li>{@link #disconnect()} tears down subscriber and publisher gateways.</li>
+     * </ul>
+     *
+     * Each step is guarded so a failure in one still lets the others run, and
+     * each must be non-blocking (consumer acks may never come on the failure path).
+     */
+    private void abortCleanup() {
+        try {
+            timeMachine.shutdown();
+        } catch (Exception ex) {
+            log.severe("time machine shutdown failed during cleanup", ex);
+        }
+        try {
+            abortConsumers();
+        } catch (Exception ex) {
+            log.severe("consumer abort failed during cleanup", ex);
+        }
+        try {
+            disconnect();
+        } catch (Exception ex) {
+            log.severe("gateway disconnect failed during cleanup", ex);
+        }
+    }
+
+    /**
+     * Best-effort, non-blocking termination of every consumer's foreign-side
+     * streamer on the abort path: subscriber (sink) gateways here, plus actors
+     * via {@link #abortActors()} (the actor list lives in the concrete engine).
+     */
+    private void abortConsumers() {
+        for (Gateway g : registeredSubscribers()) {
+            if (g != this && g instanceof AbstractGateway base) {
+                base.onAbort();
+            }
+        }
+        abortActors();
+    }
+
+    /**
+     * Hook for the concrete engine to call {@link AbstractActor#onAbort()} on each
+     * registered actor during abnormal cleanup. Default: no-op.
+     */
+    protected void abortActors() {
+        // no-op by default
     }
 
     // ------------------------------------------------------------------
@@ -333,10 +422,16 @@ public abstract class AbstractEngine extends AbstractGateway {
             }
 
             lastEventTime = te.eventTime();
-            if (te.eventTime() <= endTime()) {
-                dispatchTimeEvent(te);
+            // done(te) must run even if dispatch throws (a subscriber-gateway
+            // failure is fatal); otherwise the originating clock-driver's write
+            // permit is never released and it blocks forever in addEvent.
+            try {
+                if (te.eventTime() <= endTime()) {
+                    dispatchTimeEvent(te);
+                }
+            } finally {
+                timeMachine.done(te);
             }
-            timeMachine.done(te);
         }
     }
 
@@ -345,18 +440,12 @@ public abstract class AbstractEngine extends AbstractGateway {
             TimeEvent te = liveQueue.take();
 
             if (te.payload() instanceof EngineCommand cmd) {
-                if (cmd.kind() == EngineCommand.Kind.STARTUP) {
-                    if (!startUpDone.get()) {
-                        startUpActors(cmd.eventTime());
-                        startUpDone.set(true);
-                    }
-                    continue;
-                }
                 if (cmd.kind() == EngineCommand.Kind.SHUTDOWN) {
                     setStatus(GatewayStatus.WRAP_UP);
                     setStatus(GatewayStatus.STOPPED);
                     break;
                 }
+                continue; // never dispatch an engine command as data (startup is eager now)
             }
 
             if (status() == GatewayStatus.STOPPED) break;
@@ -380,13 +469,45 @@ public abstract class AbstractEngine extends AbstractGateway {
     protected final void dispatchTimeEvent(TimeEvent te) {
         log.largeInfo(() -> "dispatch " + te.topic().name() + " key=" + te.key()
                 + " @ " + te.eventTime());
+        // Deliver only once startup is complete, so consumers (sink gateways and
+        // actors) never see data before their onStartUp — the start barrier.
+        if (!startUpDone.get()) {
+            return;
+        }
         // Forward to a subscriber gateway if one is registered
         Gateway sub = subscriberForKey(te.topic(), te.key());
         if (sub != null && sub != this) {
             dispatchTyped(te, sub);
         }
-        if (startUpDone.get()) {
-            timeEventToActors(te);
+        timeEventToActors(te);
+    }
+
+    /**
+     * Drives subscriber-gateway startup, mirroring {@link #startUpActors}: every
+     * registered subscriber (sink) gateway gets {@link AbstractGateway#onStartUp}
+     * on the engine's dispatch thread before any data is dispatched. For a
+     * cross-language sink this blocks on the foreign ack, so the call is a barrier
+     * — all sinks are started before the run proceeds.
+     */
+    private void startUpGateways(long time) {
+        for (Gateway g : registeredSubscribers()) {
+            if (g != this && g instanceof AbstractGateway base) {
+                base.onStartUp(time);
+            }
+        }
+    }
+
+    /**
+     * Drives subscriber-gateway shutdown, mirroring {@link #shutDownActors}: every
+     * registered subscriber (sink) gateway gets {@link AbstractGateway#onShutDown}
+     * on the dispatch thread after the last data event, barriering on each ack so
+     * the run only completes once every sink has confirmed it stopped.
+     */
+    private void shutDownGateways(long time) {
+        for (Gateway g : registeredSubscribers()) {
+            if (g != this && g instanceof AbstractGateway base) {
+                base.onShutDown(time);
+            }
         }
     }
 
@@ -396,6 +517,22 @@ public abstract class AbstractEngine extends AbstractGateway {
         Topic<P> topic = (Topic<P>) te.topic();
         P payload = topic.payloadType().cast(te.payload());
         target.onEvent(topic, payload);
+    }
+
+    /**
+     * Dispatches an event to a single actor, isolating its failure: a throwing
+     * actor is logged (with its stack trace) and skipped, never aborting the run
+     * or starving the other actors subscribed to the same event. Business-logic
+     * faults are contained here; a broken boundary (subscriber gateway) is not —
+     * that is dispatched directly via {@link #dispatchTyped} and is fatal.
+     */
+    protected final void dispatchToActor(TimeEvent te, Actor actor) {
+        try {
+            dispatchTyped(te, actor);
+        } catch (Exception ex) {
+            log.severe("actor threw handling " + te.topic().name() + " key=" + te.key()
+                    + " @ " + te.eventTime() + "; isolating and continuing", ex);
+        }
     }
 
     // ------------------------------------------------------------------
@@ -427,22 +564,6 @@ public abstract class AbstractEngine extends AbstractGateway {
         } else {
             liveQueue.offer(te);
         }
-    }
-
-    private void scheduleStartup() {
-        long delay = Math.max(0L, startTime() - System.currentTimeMillis());
-        ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, name() + "-startup-scheduler");
-            t.setDaemon(true);
-            return t;
-        });
-        long startTime = startTime();
-        scheduler.schedule(() -> {
-            EngineCommand cmd = new EngineCommand(EngineCommand.Kind.STARTUP, startTime);
-            long now = System.currentTimeMillis();
-            liveQueue.offer(new TimeEvent(cmd, ENGINE_COMMAND_TOPIC, this, now, now));
-            scheduler.shutdown();
-        }, delay, TimeUnit.MILLISECONDS);
     }
 
     // ------------------------------------------------------------------

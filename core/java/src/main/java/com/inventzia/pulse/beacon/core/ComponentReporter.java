@@ -11,6 +11,8 @@
  */
 package com.inventzia.pulse.beacon.core;
 
+import java.io.PrintWriter;
+import java.io.StringWriter;
 import java.util.Objects;
 import java.util.function.Supplier;
 
@@ -76,6 +78,15 @@ public final class ComponentReporter {
         emit(ReportLevel.SEVERE, message);
     }
 
+    /**
+     * A serious error, with the offending exception's stack trace appended.
+     * Use where a throwable is caught and isolated (logged but not rethrown), so
+     * the cause is not lost.
+     */
+    public void severe(String message, Throwable cause) {
+        emit(ReportLevel.SEVERE, cause == null ? message : message + "\n" + stackTraceOf(cause));
+    }
+
     /** An unrecoverable condition. */
     public void fatal(String message) {
         emit(ReportLevel.FATAL, message);
@@ -86,5 +97,11 @@ public final class ComponentReporter {
         if (s != null) {
             s.report(System.currentTimeMillis(), source, message, level);
         }
+    }
+
+    private static String stackTraceOf(Throwable t) {
+        StringWriter sw = new StringWriter();
+        t.printStackTrace(new PrintWriter(sw));
+        return sw.toString();
     }
 }

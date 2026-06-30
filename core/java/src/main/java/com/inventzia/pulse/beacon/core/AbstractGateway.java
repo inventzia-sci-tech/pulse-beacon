@@ -288,14 +288,22 @@ public abstract class AbstractGateway implements Gateway {
      * Determines the {@link OperatingMode} from the configured time window
      * and transitions to {@link GatewayStatus#INITIALIZED}.
      *
+     * <p>Selection is lenient by design: if the whole window is in the past
+     * ({@code now > endTime}) the run is a deterministic {@link OperatingMode#COMPRESSED_TIME}
+     * replay; otherwise (the window is current or still in the future) it is
+     * {@link OperatingMode#REAL_TIME}. The intermediate {@code MIXED} mode
+     * (now inside the window, requiring replay-then-live) is not yet implemented,
+     * so a now-inside-window run is treated as {@code REAL_TIME} rather than
+     * failing — this also removes the environment-sensitive "start buffer" the
+     * examples needed to avoid a cold-start overshooting into {@code MIXED}.
+     *
      * <p>Subclasses should call {@code super.initialize()} first, then
      * perform their own initialisation (e.g. opening connections).
      */
     protected void initialize() {
         long now = System.currentTimeMillis();
-        operatingMode = (now > endTime)   ? OperatingMode.COMPRESSED_TIME :
-                        (now >= startTime) ? OperatingMode.MIXED           :
-                                             OperatingMode.REAL_TIME;
+        operatingMode = (now > endTime) ? OperatingMode.COMPRESSED_TIME
+                                        : OperatingMode.REAL_TIME;
         log.info("initialized — mode=" + operatingMode
                 + " window=[" + startTime + ".." + endTime + "]");
         setStatus(GatewayStatus.INITIALIZED);
@@ -315,6 +323,41 @@ public abstract class AbstractGateway implements Gateway {
     /** @return {@code true} if this gateway has reached {@link GatewayStatus#STOPPED}. */
     protected boolean stopped() {
         return status == GatewayStatus.STOPPED;
+    }
+
+    /**
+     * Engine-driven lifecycle: called once on every registered <em>subscriber</em>
+     * gateway when the run begins, on the engine's dispatch thread before any
+     * data is delivered. Mirrors {@code AbstractActor.onStartUp}. Default no-op;
+     * a sink gateway overrides it to notify its external side. The engine barriers
+     * on return, so all sinks are started before the run proceeds.
+     *
+     * @param timeMillis epoch millis of the start time
+     */
+    protected void onStartUp(long timeMillis) {
+        // no-op by default
+    }
+
+    /**
+     * Engine-driven lifecycle: called once on every registered <em>subscriber</em>
+     * gateway when the run ends, on the engine's dispatch thread after the last
+     * data event. Mirrors {@code AbstractActor.onShutDown}. Default no-op; a sink
+     * gateway overrides it to notify (and terminate) its external side.
+     *
+     * @param timeMillis epoch millis of the last processed event
+     */
+    protected void onShutDown(long timeMillis) {
+        // no-op by default
+    }
+
+    /**
+     * Called on abnormal engine termination instead of {@link #onShutDown}, as a
+     * best-effort, non-blocking cleanup. Default: no-op. A cross-language sink
+     * gateway overrides it to end its foreign streamer loop without waiting for
+     * an acknowledgement that may never come on the failure path.
+     */
+    protected void onAbort() {
+        // no-op by default
     }
 
     // ------------------------------------------------------------------

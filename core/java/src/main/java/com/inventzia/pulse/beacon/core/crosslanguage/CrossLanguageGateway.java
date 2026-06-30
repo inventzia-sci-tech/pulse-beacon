@@ -22,6 +22,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.SynchronousQueue;
 
@@ -46,6 +47,17 @@ import java.util.concurrent.SynchronousQueue;
  * hands the event across the boundary and blocks until acked — the same
  * handshake as {@link CrossLanguageActor}.
  *
+ * <h2>Sink lifecycle (engine-driven, ordered)</h2>
+ * <p>Lifecycle is owned by the engine, exactly as for actors: the engine calls
+ * {@link #onStartUp} on every registered subscriber gateway <em>before</em> the
+ * dispatch loop and {@link #onShutDown} <em>after</em> it, on the same dispatch
+ * thread that delivers data. So a sink component is guaranteed {@code START →
+ * data… → STOP}, and the engine barriers on each ack (all sinks up before the
+ * run proceeds, all confirmed stopped before it completes). {@code onShutDown}
+ * also hands an {@code END} across to terminate the foreign streamer loop. A
+ * source-only gateway is not a subscriber, so it never receives these calls and
+ * its sink queue is never used.
+ *
  * <p>A gateway may play both roles at once: the source loop runs on this
  * gateway's thread while the sink is driven by the engine's dispatch thread,
  * each with its own handshake — the modern form of the old
@@ -60,8 +72,10 @@ public final class CrossLanguageGateway extends AbstractGateway {
     private final SynchronousQueue<CrossLanguageEvent> outbound = new SynchronousQueue<>();
     private final Semaphore accepted = new Semaphore(0);
 
-    // -- SINK: engine → foreign language --
-    private final SynchronousQueue<CrossLanguageEvent> inbound = new SynchronousQueue<>();
+    // -- SINK: engine → foreign language (same handshake as CrossLanguageActor) --
+    // Unbounded so END can be enqueued without a consumer present (abort path must
+    // not block); determinism for data is held by the `done` semaphore, not the queue.
+    private final LinkedBlockingQueue<CrossLanguageEvent> inbound = new LinkedBlockingQueue<>();
     private final Semaphore done = new Semaphore(0);
 
     /** Lets a sink-only run() idle until disconnected, without polling. */
@@ -168,7 +182,7 @@ public final class CrossLanguageGateway extends AbstractGateway {
 
     @Override
     public void disconnect() {
-        stopLatch.countDown();
+        stopLatch.countDown(); // wake a sink-only run() idling in await()
         super.disconnect();
     }
 
@@ -178,13 +192,68 @@ public final class CrossLanguageGateway extends AbstractGateway {
 
     @Override
     public <P extends Datum> void onEvent(Topic<P> topic, P payload) {
+        handToForeignSink(CrossLanguageEvent.data(topic.name(), DatumCodec.instance().toTaggedJson(payload)));
+    }
+
+    /**
+     * Engine-driven sink start. Called on the engine's dispatch thread before any
+     * data, so the foreign component's on_startup is ordered before its first
+     * event; blocks until acked, which is the engine's startup barrier.
+     */
+    @Override
+    protected void onStartUp(long timeMillis) {
+        if (!isSink()) return; // source-only: nothing to start on the sink side
+        log.info("starting up @ " + timeMillis);
+        handToForeignSink(CrossLanguageEvent.start(timeMillis));
+    }
+
+    /**
+     * Engine-driven sink stop. Called on the engine's dispatch thread after the
+     * last data event, so the foreign component's on_shutdown is ordered after
+     * all data; blocks until acked (the shutdown barrier), then hands an END to
+     * terminate the foreign streamer loop.
+     */
+    @Override
+    protected void onShutDown(long timeMillis) {
+        if (!isSink()) return;
+        log.info("shutting down @ " + timeMillis);
+        handToForeignSink(CrossLanguageEvent.stop(timeMillis));
+        // Ends the foreign run_consume loop. Non-blocking: run_consume breaks on
+        // END before acking, so there is no ack to wait for.
+        inbound.offer(CrossLanguageEvent.END);
+    }
+
+    /**
+     * Abnormal-termination cleanup: end the sink streamer loop without the STOP
+     * handshake (the run is already failing and the engine must not block on an
+     * ack). Non-blocking, idempotent — a duplicate END is harmless, and a
+     * source-only gateway (no sink consumer) simply leaves it unread.
+     */
+    @Override
+    protected void onAbort() {
+        if (isSink()) {
+            inbound.offer(CrossLanguageEvent.END);
+        }
+    }
+
+    /**
+     * Hands one event to the foreign sink and blocks until it is acked. This is
+     * the sink's half of the determinism handshake: the engine's dispatch thread
+     * cannot advance the clock until the foreign side has processed the event.
+     */
+    private void handToForeignSink(CrossLanguageEvent event) {
         try {
-            inbound.put(CrossLanguageEvent.data(topic.name(), DatumCodec.instance().toTaggedJson(payload)));
+            inbound.put(event);
             done.acquire();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new CrossLanguageException(name() + " interrupted handing event to the foreign side", e);
         }
+    }
+
+    /** True if the engine routes events to this gateway as a subscriber (i.e. it acts as a sink). */
+    private boolean isSink() {
+        return !registeredPublishers().isEmpty();
     }
 
     /** Blocks for the next event to forward out. Returns {@link CrossLanguageEvent.Kind#END} to stop. */

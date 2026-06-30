@@ -161,6 +161,19 @@ public final class MultiClientEngine extends AbstractEngine {
     }
 
     @Override
+    protected void abortActors() {
+        for (ActorRegistration reg : actors) {
+            if (reg.actor() instanceof AbstractActor base) {
+                base.onAbort();
+            }
+            Thread t = reg.thread();
+            if (t != null && t.isAlive()) {
+                t.interrupt();
+            }
+        }
+    }
+
+    @Override
     protected boolean actorsReadyToShutDown() {
         return actors.stream()
                      .filter(ActorRegistration::ownThread)
@@ -189,18 +202,18 @@ public final class MultiClientEngine extends AbstractEngine {
             // High-priority actors first
             for (ActorRegistration reg : actors) {
                 if (reg.highPriority() && matched.contains(reg.actor())) {
-                    dispatchTyped(te, reg.actor());
+                    dispatchToActor(te, reg.actor());
                 }
             }
             // Then normal-priority actors
             for (ActorRegistration reg : actors) {
                 if (!reg.highPriority() && matched.contains(reg.actor())) {
-                    dispatchTyped(te, reg.actor());
+                    dispatchToActor(te, reg.actor());
                 }
             }
         } else {
             for (Actor actor : matched) {
-                dispatchTyped(te, actor);
+                dispatchToActor(te, actor);
             }
         }
     }

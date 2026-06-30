@@ -212,6 +212,36 @@ Role matrix:
 > it `setDriveClock(true)` by default and routes by the decoded datum's `getDatumKey()` (D4). Both
 > register publishable/produced topics via `withTopic(...)`.
 
+> **Sink lifecycle is engine-driven (ordered), exactly like an actor.** The engine owns subscriber
+> (sink) gateway lifecycle just as it owns actor lifecycle: `AbstractEngine.startUpGateways(t)` calls
+> `onStartUp` on every registered subscriber gateway *before* the dispatch loop, and
+> `shutDownGateways(t)` calls `onShutDown` *after* it, on the same dispatch thread that delivers data.
+> `CrossLanguageGateway` overrides those hooks (mirroring `CrossLanguageActor.onStartUp/onShutDown`)
+> to hand `START` across at startup and `STOP` (blocking on the `done` handshake) then `END` at
+> shutdown. Consequences:
+> - **Guaranteed ordering**: a sink component sees `START → data… → STOP → END`. Data dispatch is
+>   gated on `startUpDone`, so nothing reaches a sink before its `on_startup`.
+> - **Barrier semantics** (restores the old design): the engine blocks on each sink's start ack
+>   before the run proceeds, and on each stop ack before it completes — all sinks up before any data,
+>   all confirmed stopped before COMPLETE.
+> - **No special-casing needed**: a *source-only* gateway is not a registered subscriber, so it never
+>   receives these calls and its sink queue is never used. A *bidirectional* gateway's sink teardown
+>   is tied to engine teardown (post-loop), not to source exhaustion, so there is no premature close.
+>
+> **Queues and the END sentinel.** Both `CrossLanguageActor.inbound` and `CrossLanguageGateway.inbound`
+> are `LinkedBlockingQueue` (not `SynchronousQueue`): the determinism handshake lives in the `done`
+> semaphore (one outstanding event, engine blocks until acked), so the queue only needs to let `END`
+> be enqueued *without a waiting consumer*. That matters for the **abort path**: on abnormal
+> termination the normal `onShutDown` does not run, so `AbstractEngine.abortCleanup()` calls a
+> best-effort, non-blocking `onAbort()` on every cross-language consumer (actors via the engine,
+> sink gateways via `registeredSubscribers()`), which offers `END` to end the streamer without waiting
+> for an ack that may never come. Without this, a consumer blocked in `takeNext()` would hang forever
+> after an engine error.
+>
+> This is why a sink `CrossLanguageGateway` is lifecycle-managed by the engine rather than
+> self-terminating from `disconnect()` (the original bug: `disconnect()` only released the source-side
+> `stopLatch` and never sent `END`). Covered by `CrossLanguageGatewaySinkTest` (normal **and** abort paths).
+
 ---
 
 ## 5. The Python side — beacon-core Python extension (written once)

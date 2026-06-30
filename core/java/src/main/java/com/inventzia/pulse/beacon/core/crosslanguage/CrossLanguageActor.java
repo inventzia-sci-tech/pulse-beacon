@@ -19,8 +19,8 @@ import com.inventzia.pulse.data.datum.DatumCodec;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.Semaphore;
-import java.util.concurrent.SynchronousQueue;
 
 /**
  * The Java half of a consumer/strategy actor implemented in another language.
@@ -57,8 +57,12 @@ public final class CrossLanguageActor extends AbstractActor {
     /** name → Topic, for topics this actor may publish on (decode + routing). */
     private final Map<String, Topic<?>> topics = new ConcurrentHashMap<>();
 
-    /** Engine dispatch thread → foreign streamer: one event at a time. */
-    private final SynchronousQueue<CrossLanguageEvent> inbound = new SynchronousQueue<>();
+    // Engine dispatch thread → foreign streamer. Unbounded so the END sentinel
+    // can be enqueued without a consumer present (the abort path must not block).
+    // The one-event-at-a-time determinism handshake lives in the `done` semaphore,
+    // not in the queue: onEvent blocks on `done` until the streamer acks, so the
+    // engine never has more than one data event outstanding regardless.
+    private final LinkedBlockingQueue<CrossLanguageEvent> inbound = new LinkedBlockingQueue<>();
     /** Released by the streamer once it has processed the handed event. */
     private final Semaphore done = new Semaphore(0);
 
@@ -95,12 +99,19 @@ public final class CrossLanguageActor extends AbstractActor {
     protected void onShutDown(long timeMillis) {
         log.info("shutting down @ " + timeMillis);
         handToForeign(CrossLanguageEvent.stop(timeMillis));
-        // Terminate the streamer loop once the stop has been acked.
-        try {
-            inbound.put(CrossLanguageEvent.END);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+        // Terminate the streamer loop once the stop has been acked. Non-blocking:
+        // run_consume breaks on END before acking, so there is no ack to wait for.
+        inbound.offer(CrossLanguageEvent.END);
+    }
+
+    /**
+     * Abnormal-termination cleanup: end the streamer loop without the STOP
+     * handshake (the run is already failing and the engine must not block on an
+     * ack). Non-blocking, idempotent — a duplicate END is harmless.
+     */
+    @Override
+    protected void onAbort() {
+        inbound.offer(CrossLanguageEvent.END);
     }
 
     private void handToForeign(CrossLanguageEvent event) {

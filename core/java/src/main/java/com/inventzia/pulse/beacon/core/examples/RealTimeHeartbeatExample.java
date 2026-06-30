@@ -46,11 +46,11 @@ public final class RealTimeHeartbeatExample {
 
     public static void main(String[] args) throws Exception {
         final long now   = System.currentTimeMillis();
-        // Start well ahead of "now" so the engine initialises before the window
-        // opens → REAL_TIME. The buffer must exceed cold-start cost (JVM class
-        // loading + first Logback init), which on a slow filesystem is a few
-        // seconds; too small and "now" overshoots startTime, landing the engine
-        // in the (unimplemented) MIXED mode.
+        // Start a little ahead of "now" so the heartbeats land in the future and
+        // the run is wall-clock paced. A cold-start that overshoots startTime is
+        // harmless now — mode selection is lenient (a now-inside-window run is
+        // REAL_TIME, not the throwing MIXED), so this buffer is for demo timing,
+        // not correctness.
         final long start = now + 8_000L;
         final long end   = start + 30_000L;  // 30-second run
 

@@ -125,4 +125,15 @@ public abstract class AbstractActor implements Actor {
     protected void onShutDown(long timeMillis) {
         // no-op by default
     }
+
+    /**
+     * Called on abnormal engine termination instead of {@link #onShutDown}, as a
+     * best-effort, non-blocking cleanup. Default: no-op. A cross-language actor
+     * overrides it to release any thread blocked on the foreign side (e.g. end
+     * its streamer loop) without waiting for an acknowledgement that may never
+     * come on the failure path.
+     */
+    protected void onAbort() {
+        // no-op by default
+    }
 }

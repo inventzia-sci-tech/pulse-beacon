@@ -109,6 +109,13 @@ public final class TimeMachine {
      */
     private final Map<Gateway, Semaphore> permits = new ConcurrentHashMap<>();
 
+    /**
+     * Set once by {@link #shutdown()}. When true, producers in {@link #addEvent}
+     * bail without enqueuing and the consumer's {@link #take()} returns null,
+     * so an aborting engine cannot leave a producer blocked on a permit forever.
+     */
+    private volatile boolean shutdown = false;
+
     // ------------------------------------------------------------------
     // Registration
     // ------------------------------------------------------------------
@@ -183,6 +190,8 @@ public final class TimeMachine {
     public void addEvent(Datum payload, Topic<?> topic, Gateway origin)
             throws InterruptedException {
 
+        if (shutdown) return;
+
         boolean driver = origin.drivesClock();
         Semaphore permit = driver ? permits.get(origin) : null;
 
@@ -193,9 +202,18 @@ public final class TimeMachine {
         }
 
         synchronized (this) {
+            if (shutdown) {
+                // Tearing down: shutdown() owns the permit's lifecycle (it has
+                // already released to wake us and will clear the map). Do NOT
+                // release again here — a second release can overflow the
+                // semaphore ("Maximum permit count exceeded").
+                log.warn("dropping event from " + origin.name() + " on " + topic.name()
+                        + " (time machine shut down)");
+                return;
+            }
             if (!origin.connected()) {
-                log.warn("dropping event from disconnected gateway " + origin.name()
-                        + " on " + topic.name());
+                log.warn("dropping event from " + origin.name() + " on " + topic.name()
+                        + " (gateway disconnected)");
                 if (permit != null) permit.release();
                 return;
             }
@@ -273,6 +291,39 @@ public final class TimeMachine {
         queue.clear();
         pending.clear();
         signalConsumer();
+    }
+
+    /**
+     * Aborts the time machine after an abnormal engine termination.
+     *
+     * <p>Marks the machine shut down, clears the queue, and releases every
+     * clock-driver's write permit so any producer thread blocked in
+     * {@link #addEvent} (waiting on a permit that {@link #done} will never
+     * release, because the consumer loop has died) unblocks, observes the
+     * shutdown flag, and returns without enqueuing. Also wakes a consumer
+     * blocked in {@link #take()} (it returns {@code null} on the empty queue).
+     *
+     * <p>Idempotent and safe to call from the engine's cleanup path regardless
+     * of operating mode (in REAL_TIME there are no permits, so it just clears).
+     */
+    public void shutdown() {
+        synchronized (this) {
+            shutdown = true;
+            queue.clear();
+            pending.clear();
+            drivers.clear();
+            consumerReady.release(); // wake a blocked take(); it returns null on the empty queue
+        }
+        // Wake any producer parked in addEvent's acquire(). There is at most one
+        // such thread per gateway (one producer thread per clock-driving gateway),
+        // so a single permit suffices; the woken producer sees the shutdown flag
+        // and returns without re-acquiring. Releasing a bounded amount avoids the
+        // "Maximum permit count exceeded" overflow that release(Integer.MAX_VALUE)
+        // hits when a permit is already non-zero.
+        for (Semaphore permit : permits.values()) {
+            permit.release();
+        }
+        permits.clear();
     }
 
     // ------------------------------------------------------------------

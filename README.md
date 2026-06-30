@@ -35,6 +35,17 @@ Key properties:
 - **Typed events.** Event schemas are defined in YAML in
   [pulse-data](https://github.com/inventzia-sci-tech/pulse-data) and code-generated for both Java
   and Python. Actors are written against concrete generated types, not untyped maps or CSV strings.
+- **Fault isolation in dispatch.** A throwing actor is caught, logged with its stack trace, and
+  skipped: the run continues and the other actors on that event are unaffected (a buggy strategy
+  cannot abort a replay). A failing *subscriber/sink gateway* is treated as a broken boundary and is
+  fatal, but the engine still shuts down cleanly. Either way the time machine's per-gateway write
+  permit is always released (dispatch acknowledges in a `finally`) and any clock-driving source is
+  unblocked on teardown, so a dispatch failure can never strand a producer or hang the run.
+- **Causal publishing.** An actor may publish a derived event only at or after the event time it is
+  currently handling. Same-tick (an actor re-emitting at the triggering event's time) and future
+  events are allowed; a publish dated *before* the current event is acausal (it would break
+  deterministic event-time ordering) and is rejected. So a replay can never produce a retroactive
+  event that a live run could not.
 
 ## Architecture
 
