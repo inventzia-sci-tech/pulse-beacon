@@ -185,8 +185,16 @@ public final class MultiClientEngine extends AbstractEngine {
     // ------------------------------------------------------------------
 
     /**
-     * Fans out the event carried in {@code te} to all actors subscribed to
-     * its topic and key. High-priority actors are dispatched first.
+     * Fans out the event carried in {@code te} to all actors subscribed to its
+     * topic and key, in a <strong>deterministic</strong> order: high-priority
+     * actors first, then normal-priority, each pass in <em>registration order</em>.
+     *
+     * <p>Both passes iterate the registration list ({@link #actors}); the matched
+     * set is used only for membership, so its iteration order is irrelevant. This
+     * matters for replay determinism — when two matched actors publish derived
+     * events on the same tick, their dispatch order sets the enqueue order of
+     * those events, so a non-deterministic order (e.g. iterating a {@code HashSet}
+     * bucket) could make a replay diverge from itself or from a live run.
      */
     @Override
     protected void timeEventToActors(TimeEvent te) {
@@ -195,25 +203,16 @@ public final class MultiClientEngine extends AbstractEngine {
         Set<Actor> matched = keyMap.get(te.key());
         if (matched == null || matched.isEmpty()) return;
 
-        boolean hasHighPriority = actors.stream()
-                .anyMatch(r -> r.highPriority() && matched.contains(r.actor()));
-
-        if (hasHighPriority) {
-            // High-priority actors first
-            for (ActorRegistration reg : actors) {
-                if (reg.highPriority() && matched.contains(reg.actor())) {
-                    dispatchToActor(te, reg.actor());
-                }
+        // Pass 1: high-priority actors, in registration order.
+        for (ActorRegistration reg : actors) {
+            if (reg.highPriority() && matched.contains(reg.actor())) {
+                dispatchToActor(te, reg.actor());
             }
-            // Then normal-priority actors
-            for (ActorRegistration reg : actors) {
-                if (!reg.highPriority() && matched.contains(reg.actor())) {
-                    dispatchToActor(te, reg.actor());
-                }
-            }
-        } else {
-            for (Actor actor : matched) {
-                dispatchToActor(te, actor);
+        }
+        // Pass 2: normal-priority actors, in registration order.
+        for (ActorRegistration reg : actors) {
+            if (!reg.highPriority() && matched.contains(reg.actor())) {
+                dispatchToActor(te, reg.actor());
             }
         }
     }

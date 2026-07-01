@@ -31,7 +31,9 @@ Key properties:
   (`Datum.getDatumTime()`), not by arrival order. Each `TimeEvent` also records processing
   timestamps (when it entered and left the machine) for latency measurement and diagnostics.
 - **Per-`(topic, keys)` routing.** Subscribers declare exactly which key values on a topic they
-  care about, and the engine delivers only matching events.
+  care about, and the engine delivers only matching events. When several actors match one event they
+  are dispatched in a deterministic order (high-priority first, then registration order), so a replay
+  reproduces itself exactly.
 - **Typed events.** Event schemas are defined in YAML in
   [pulse-data](https://github.com/inventzia-sci-tech/pulse-data) and code-generated for both Java
   and Python. Actors are written against concrete generated types, not untyped maps or CSV strings.
