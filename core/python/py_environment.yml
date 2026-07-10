@@ -31,4 +31,8 @@ dependencies:
   - pytest            # runs the cross-language parity test (tests/test_historic_run_jpype.py)
   - pip
   - pip:
-      - jpype1        # in-process Python <-> Java bridge
+      - jpype1        # in-process bridge, Python-host direction (Python boots the JVM)
+      - jep           # in-process bridge, Java-host direction (JVM boots CPython).
+                      # Compiles native code at install: needs JAVA_HOME (set by the
+                      # bundled openjdk) + a C compiler on PATH, and the shared
+                      # libpython the conda Python ships.

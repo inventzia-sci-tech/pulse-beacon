@@ -85,6 +85,19 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- JEP: Java-host cross-language bridge (HistoricRunJepExample). Compile-only;
+             at runtime the pip-installed jep (jar + native libjep.so) from the `pulse`
+             env is used. Install into local .m2 once, e.g.:
+               mvn install:install-file \
+                 -Dfile=$CONDA_PREFIX/lib/python3.11/site-packages/jep/jep-4.3.1.jar \
+                 -DgroupId=black.ninia -DartifactId=jep -Dversion=4.3.1 -Dpackaging=jar -->
+        <dependency>
+            <groupId>black.ninia</groupId>
+            <artifactId>jep</artifactId>
+            <version>4.3.1</version>
+            <scope>provided</scope>
+        </dependency>
+
         <!-- Testing -->
         <dependency>
             <groupId>org.junit.jupiter</groupId>

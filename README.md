@@ -162,13 +162,22 @@ parity is also asserted as a pytest:
 conda run -n pulse python -m pytest core/python/tests/test_historic_run_jpype.py
 ```
 
+**Java-host (JEP) counterparts** run the *same* Python components with the JVM as host (the opposite
+embedding direction): `examples/HistoricRunJepExample.java` and `examples/RealTimeRunJepExample.java`,
+driven by `crosslanguage/JepLauncher.java` + the Python factory `crosslanguage/jep_host.py`. JEP needs
+a native setup (jar + `libjep`/`jep.dll` + libpython) — see
+[`core/java/.../crosslanguage/JEP_README.md`](./core/java/src/main/java/com/inventzia/pulse/beacon/core/crosslanguage/JEP_README.md).
+Run either with `core/java/run-jep-example.sh [ExampleName]`; the historical run's parity is a pytest
+(`core/python/tests/test_historic_run_jep.py`).
+
 ## Current status
 
 The `core/java` module is functional end-to-end in both operating modes, covered by an integration
-test (`HistoricalRunTest`, 20× repeated). The in-process cross-language bridge is working in the
-Python-host direction: the JPype launcher re-creates `HistoricRunExample` with Python actors and a
-Python source gateway, and passes parity (the Python printer sees exactly the all-Java event-time
-merge). The Java-host (JEP) launcher and the ZMQ socket transport remain planned.
+test (`HistoricalRunTest`, 20× repeated). The in-process cross-language bridge works in **both
+embedding directions**, off one shared set of Python components and streamer: the **Python-host**
+(JPype) launcher and the **Java-host** (JEP) launcher each re-create `HistoricRunExample` with Python
+actors and a Python source gateway, and both pass parity (the Python printer sees exactly the
+all-Java event-time merge). The ZMQ out-of-process socket transport remains planned.
 
 | Area | Components | Status |
 |------|-----------|--------|
@@ -184,8 +193,8 @@ merge). The Java-host (JEP) launcher and the ZMQ socket transport remain planned
 | Cross-language Java half | `core.crosslanguage.CrossLanguageActor` / `CrossLanguageGateway` | ✅ |
 | Python `beacon.core` | actor/gateway bases, channel, dispatch, `Reporter`/`ComponentReporter` mirror, `CrossLanguageStreamer` | ✅ |
 | Python-host launchers | JPype historical run (`historic_run_jpype`, parity verified) and real-time run (`realtime_run_jpype`, mirrors `RealTimeHeartbeatExample`) | ✅ |
-| Cross-language parity test | `tests/test_historic_run_jpype.py` (pytest; asserts the Python printer reproduces the all-Java merge) | ✅ |
-| Java-host launcher | JEP | ⏳ planned |
+| Java-host launcher | JEP historical run (`HistoricRunJepExample`, parity verified) and real-time run (`RealTimeRunJepExample`) via `JepLauncher` + `jep_host.py` — the JVM hosts CPython | ✅ |
+| Cross-language parity tests | `tests/test_historic_run_jpype.py` (Python-host) and `tests/test_historic_run_jep.py` (Java-host); both assert the Python printer reproduces the all-Java merge | ✅ |
 | Socket transport | ZMQ gateways | ⏳ planned |
 
 ## Requirements

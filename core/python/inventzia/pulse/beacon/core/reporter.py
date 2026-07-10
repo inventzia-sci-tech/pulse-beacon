@@ -94,6 +94,45 @@ class LoggingReporter(Reporter):
         return logging.getLogger(source).isEnabledFor(_TO_LOGGING[level])
 
 
+class CallbackReporter(Reporter):
+    """Forwards every record to a foreign sink object — a Java ``Reporter`` under JEP.
+
+    Lets Python components log through the *Java* logger so both languages share one
+    ordered, identically-formatted stream (the Java side stamps and writes the line).
+    The Java ``ReportLevel`` enum can't be constructed from Python, so the level is
+    passed by name to ``reportFromForeign`` / ``isEnabledFromForeign`` (default methods
+    on the Java ``Reporter`` interface).
+    """
+
+    def __init__(self, java_sink):
+        self._java = java_sink
+
+    def report(self, timestamp: int, source: str, message: str, level: ReportLevel) -> None:
+        self._java.reportFromForeign(timestamp, source, message, level.name)
+
+    def is_enabled(self, source: str, level: ReportLevel) -> bool:
+        return self._java.isEnabledFromForeign(source, level.name)
+
+
+# ----------------------------------------------------------------------------
+# Default sink. Components that don't pass a sink use this; it is LoggingReporter
+# unless overridden — e.g. under JEP the launcher redirects it to the Java logger.
+# ----------------------------------------------------------------------------
+
+_default_reporter_override: "Reporter | None" = None
+
+
+def set_default_reporter(reporter: "Reporter | None") -> None:
+    """Override the sink used by components that don't pass one; pass ``None`` to reset."""
+    global _default_reporter_override
+    _default_reporter_override = reporter
+
+
+def default_reporter() -> "Reporter":
+    """The sink a new :class:`ComponentReporter` uses when none is given."""
+    return _default_reporter_override if _default_reporter_override is not None else LoggingReporter.shared()
+
+
 class ComponentReporter:
     """Per-component logging handle. Mirror of the Java ``ComponentReporter``.
 
@@ -104,7 +143,7 @@ class ComponentReporter:
 
     def __init__(self, source: str, sink: "Reporter | None" = None):
         self._source = source
-        self._sink: Reporter = sink or LoggingReporter.shared()
+        self._sink: Reporter = sink or default_reporter()
 
     def sink(self, sink: Reporter) -> None:
         """Redirect this component's output to a different sink."""

@@ -49,4 +49,20 @@ public interface Reporter {
     default boolean isEnabled(String source, ReportLevel level) {
         return true;
     }
+
+    // ------------------------------------------------------------------
+    // Foreign-language convenience (JEP): a Python component logging through
+    // this Java sink passes the level by name, since it cannot construct the
+    // Java ReportLevel enum. Lets Python and Java share one logging stream.
+    // ------------------------------------------------------------------
+
+    /** {@link #report} with the level passed by name (e.g. from an embedded Python interpreter). */
+    default void reportFromForeign(long timestamp, String source, String message, String level) {
+        report(timestamp, source, message, ReportLevel.valueOf(level));
+    }
+
+    /** {@link #isEnabled} with the level passed by name. */
+    default boolean isEnabledFromForeign(String source, String level) {
+        return isEnabled(source, ReportLevel.valueOf(level));
+    }
 }

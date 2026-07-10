@@ -402,8 +402,33 @@ Follow-ups landed since milestone 1:
   the boundary both ways in one live run. Being wall-clock paced, it asserts COMPLETE + beats seen
   rather than exact parity.
 
-Java-host milestone (next): `HistoricRunJepExample.java` + `crosslanguage/jep_host.py`, reusing 1–4
-unchanged. Sink-only gateway example can follow once a Java→external example target exists.
+**Java-host (JEP) milestone: DONE (2026-07-02).** `HistoricRunJepExample.java` +
+`crosslanguage/jep_host.py` re-create the same run with the JVM as host, reusing items 1–4
+unchanged; it prints `PARITY OK` (the Python printer, reached from Java, sees the exact 10-event
+merge; the Python echo publishes back to the Java sink). Automated as a subprocess parity test,
+`core/python/tests/test_historic_run_jep.py` (mirror of the JPype test). Both embedding directions
+now work off one set of Python components + streamer.
+
+Run (from `core/java`, in the `pulse` env): `conda run -n pulse ./run-jep-example.sh`. The launch
+needs three things beyond the normal classpath, all handled by the script/test:
+- **JEP jar on the classpath + `-Djava.library.path=<jep dir>`** for the native `libjep.so`, and
+  **`LD_LIBRARY_PATH` including `$CONDA_PREFIX/lib`** so `libjep` finds the shared `libpython`.
+- The jep jar is a **`provided`** Maven dependency (`black.ninia:jep`), installed once into local
+  `.m2` from the pip build (see the pom comment); the module compiles against it but bundles nothing.
+- **`-Dpulse.repo.root=<New>`** so each interpreter puts the two repo roots on `sys.path` (the
+  repo-root-prefixed import style).
+
+Gotchas learned:
+- **JEP thread affinity.** A JEP (sub)interpreter is bound to its creating thread, so each streamer
+  runs in its own interpreter created on its own Java thread — which is exactly the streamer model
+  (one thread per component), so no extra work.
+- **String conversion is automatic** (unlike JPype's `convertStrings=True`): Java `String` returns
+  come back to Python as `str`, so the tagged-JSON decode works without wrapping.
+- **Parity read-back across threads.** The host cannot read another thread's interpreter state, so
+  the Python printer appends to a shared `java.util.List` handed in by the launcher (a Java call from
+  Python, proxied by JEP), which the host reads after the run.
+
+Sink-only gateway example can follow once a Java→external example target exists.
 
 ---
 

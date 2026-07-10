@@ -297,6 +297,14 @@ public abstract class AbstractGateway implements Gateway {
      * failing — this also removes the environment-sensitive "start buffer" the
      * examples needed to avoid a cold-start overshooting into {@code MIXED}.
      *
+     * <p><b>Contract (intentional leniency).</b> Until replay-then-live
+     * {@code MIXED} mode exists, windows that have <em>already started</em> are
+     * treated as {@code REAL_TIME}. The engine does <b>not</b> backfill missed
+     * events: anything in {@code [startTime, now]} at the moment the engine begins
+     * running is seen only if a live source emits it late — there is no historical
+     * catch-up. A run that must replay {@code [startTime, now]} deterministically
+     * before going live needs true {@code MIXED} (a future addition).
+     *
      * <p>Subclasses should call {@code super.initialize()} first, then
      * perform their own initialisation (e.g. opening connections).
      */
