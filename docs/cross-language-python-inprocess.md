@@ -1,13 +1,16 @@
-# Cross-language Python components, in-process (historical replay)
+# Cross-language Python components, in-process (both embedding directions)
 
 Status: **living document** — drafted as a spec, kept current as tasks are completed. Scope: run
 pulse-beacon **components written in Python** — both
 **actors** (consumers/strategies) and **gateways** (external boundaries: sources and sinks) —
-in-process with the **Java** engine, under **compressed-time (historical) replay**. Real-time and
-ZMQ out-of-process transport are out of scope here (later spec).
+in-process with the **Java** engine, in **both operating modes** (compressed-time historical replay
+**and** real-time) and **both embedding directions** (Python-host and Java-host). Out of scope here:
+the ZMQ out-of-process transport (later spec).
 
 The forcing function (milestone 1) re-creates `HistoricRunExample` with the Printer/Echo consumers
 **and** at least one external feed implemented in Python, proving both roles end-to-end in one run.
+Later milestones added the Java-host direction and a real-time run in each direction — all off the
+**same** Python components and streamer (see §6, §8).
 
 The design supports **both embedding directions** behind one abstraction:
 
@@ -59,7 +62,7 @@ write-once Python.
 ```
   ┌──────────────────────────────────────────────────────────────────┐
   │ (A) Component API — pure Python, no JVM imports                    │
-  │     BeaconActor:   on_start / on_event / on_stop  (+ publish)      │
+  │     BeaconActor:   on_startup / on_event / on_shutdown (+ publish) │
   │     BeaconGateway: produce() [source]  and/or  on_event() [sink]   │
   ├──────────────────────────────────────────────────────────────────┤
   │ (B) Channel + dispatch — pure Python, direction-agnostic           │
@@ -76,8 +79,8 @@ write-once Python.
   ├──────────────────────────────────────────────────────────────────┤
   │ (E) Host bootstrap + launcher — THE ONLY direction-specific part   │
   │     jpype_host: start JVM, build graph, run streamer on Py thread  │
-  │     jep_host:   Java builds graph + JEP interp on the streamer     │
-  │                 thread, then calls CrossLanguageStreamer.run_*()    │
+  │     JepLauncher: builds graph, one JEP interp per component, calls │
+  │     jep_host is the generic factory it calls (run_consume/produce) │
   └──────────────────────────────────────────────────────────────────┘
 ```
 
@@ -251,18 +254,21 @@ The home for building consumers **and** gateways in Python. Mirrors the Java pac
 
 ```
 core/python/inventzia/pulse/beacon/core/
-  actor.py        # BeaconActor: on_start / on_event / on_stop  (+ publish via channel)
+  actor.py        # BeaconActor: on_startup / on_event / on_shutdown  (+ publish via channel)
   gateway.py      # BeaconGateway: produce() [source]  and/or  on_event() [sink]
   channel.py      # BeaconChannel: publish(topic, datum)  (mirror of the actor's bound Pub bus)
-  dispatch.py     # decode JSON -> native model; route EngineCommand->on_start/on_stop, else on_event
+  dispatch.py     # decode tagged JSON -> native model; route Kind START/STOP -> on_startup/on_shutdown, else on_event
+  reporter.py     # Python mirror of the Java Reporter facade (swappable sink; JEP routes it to Java)
   crosslanguage/
     cross_language_streamer.py  # CrossLanguageStreamer: run_consume() / run_produce()
-    jpype_host.py               # Python-host bootstrap: start JVM, build graph, launch streamers
-    jep_host.py                 # Java-host entry: invoked by JEP to wire component + run streamers
+    jpype_host.py               # Python-host bootstrap: start the JVM, then run streamers
+    jep_host.py                 # Java-host generic factory: build a component by name + run its streamer
+    README.md                   # the options (JPype / JEP / ZMQ) at a glance
   examples/
-    print_consumer.py    # PrintConsumer(BeaconActor)
-    echo_consumer.py      # EchoConsumer(BeaconActor)
-    message_feed_gateway.py  # source BeaconGateway: yields TextMessage events in time order
+    print_consumer.py            # PrintConsumer(BeaconActor)
+    echo_consumer.py             # EchoConsumer(BeaconActor)
+    recording_print_consumer.py  # RecordingPrinter: PrintConsumer that records to a caller-supplied sink (JEP parity)
+    message_feed_gateway.py      # source BeaconGateway: yields TextMessage events in time order
 ```
 
 `cross_language_streamer.py` — both loops, same code both directions (as built):
@@ -325,10 +331,34 @@ End-to-end debuggable in PyCharm: breakpoints in both `produce()` and `on_event(
 
 ### 6b. Java-host (JEP)
 
-`HistoricRunJepExample.main` builds the same graph, creates a JEP interpreter on each streamer
-thread, imports `jep_host`, wires the same Python components, and calls
-`CrossLanguageStreamer.run_consume()/run_produce()`. Same Java components, same streamer, same
-Python components — only the bootstrap differs.
+Here the **JVM is the host**. A Java example (`HistoricRunJepExample`, `RealTimeRunJepExample`) builds
+the same engine graph as its all-Java sibling, then declares each Python component as **data** and
+hands it to `JepLauncher` — the Java-side infrastructure in `crosslanguage/` (the JEP mirror of
+`jpype_host`):
+
+```java
+JepLauncher jep = new JepLauncher(List.of(beaconRoot, dataRoot));  // repo roots for sys.path
+jep.launch(new JepLauncher.Component("py-print", pyPrint, CONSUME,
+        "…examples.recording_print_consumer.RecordingPrinter", List.of("print-actor", received)))
+   .start();
+```
+
+For each `Component`, `launch` opens **one JEP interpreter** (bound to that thread), sets up
+`sys.path`, and calls the **generic Python factory** `jep_host.run_consume` / `run_produce`, which
+imports the named type, constructs it with the given args, and drives the shared
+`CrossLanguageStreamer` loop. So the Java host names *which* component (type + args + loop); `jep_host`
+knows no component names, and the same Python components/streamer are reused unchanged. Parity is read
+back through a shared `java.util.List` the Python printer appends to (the JVM cannot read another
+thread's interpreter state); the real-time run asserts COMPLETE + beats seen.
+
+**Unified logging.** `JepLauncher` redirects each interpreter's Python logging to the **Java** logger
+— it installs a `CallbackReporter` as the Python default `Reporter` sink, forwarding to the Java
+`Reporter` via `reportFromForeign` — so Python and Java components share one ordered,
+identically-formatted console stream instead of two separately-buffered ones.
+
+**Native setup** (jep jar + `libjep`/`jep.dll` + libpython) is the only prerequisite beyond the
+classpath — see `crosslanguage/JEP_README.md` (Windows + Linux). Run either example with
+`core/java/run-jep-example.sh [ExampleName]`; `test_historic_run_jep.py` is the automated parity guard.
 
 ---
 
@@ -427,6 +457,20 @@ Gotchas learned:
 - **Parity read-back across threads.** The host cannot read another thread's interpreter state, so
   the Python printer appends to a shared `java.util.List` handed in by the launcher (a Java call from
   Python, proxied by JEP), which the host reads after the run.
+
+Follow-ups since the JEP milestone:
+- **`JepLauncher` (Java) extracted as reusable infrastructure** (`crosslanguage/`), and **`jep_host`
+  refactored into a generic factory** (`run_consume` / `run_produce` build a component *by
+  fully-qualified name*). The Java side declares components as data (`JepLauncher.Component`); nothing
+  example-specific lives in `jep_host` (see §6b). `RecordingPrinter` moved to `examples/` as an
+  ordinary type the factory instantiates.
+- **`RealTimeRunJepExample`** — the JEP real-time run (three wall-clock heartbeats → Python printer +
+  echo → Java sink), mirroring `realtime_run_jpype.py` in the Java-host direction. Reuses the same
+  Python types; asserts COMPLETE + beats seen.
+- **Unified logging** — under JEP the Python `ComponentReporter` is routed to the Java logger
+  (`CallbackReporter` → `Reporter.reportFromForeign`), so both languages share one ordered console
+  stream. `run-jep-example.sh` now takes an example name; setup is documented in
+  `crosslanguage/JEP_README.md`, with a short options README in each cross-language package.
 
 Sink-only gateway example can follow once a Java→external example target exists.
 

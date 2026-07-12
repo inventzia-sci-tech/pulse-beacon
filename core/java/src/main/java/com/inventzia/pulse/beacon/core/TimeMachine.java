@@ -19,6 +19,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Merges events from multiple {@link Gateway}s into a single, deterministically
@@ -74,9 +75,12 @@ public final class TimeMachine {
     }
 
     // ------------------------------------------------------------------
-    // Queue — sorted ascending by eventTime, tiebreak by beginTstamp
+    // Queue — sorted ascending by eventTime, tie-broken by (rank, index, sequence)
     // ------------------------------------------------------------------
     private final List<TimeEvent> queue = new ArrayList<>();
+
+    /** Monotonic enqueue counter — the final, per-event tie-break for equal-time events. */
+    private final AtomicLong sequence = new AtomicLong();
 
     // ------------------------------------------------------------------
     // Clock-driver tracking
@@ -181,13 +185,15 @@ public final class TimeMachine {
      * method acquires the write permit, the event is silently dropped and the
      * permit is released.
      *
-     * @param payload the payload to enqueue
-     * @param topic   the topic the payload was published on
-     * @param origin  the gateway that produced the payload
+     * @param payload     the payload to enqueue
+     * @param topic       the topic the payload was published on
+     * @param origin      the gateway that produced the payload
+     * @param originRank  the origin's rank for the deterministic tie-break (0 = high priority)
+     * @param originIndex the origin's stable registration index for the tie-break
      * @throws InterruptedException if the thread is interrupted while waiting
      *                              for the per-gateway write permit
      */
-    public void addEvent(Datum payload, Topic<?> topic, Gateway origin)
+    public void addEvent(Datum payload, Topic<?> topic, Gateway origin, int originRank, int originIndex)
             throws InterruptedException {
 
         if (shutdown) return;
@@ -218,7 +224,8 @@ public final class TimeMachine {
                 return;
             }
             long now = System.currentTimeMillis();
-            TimeEvent te = new TimeEvent(payload, topic, origin, now, now);
+            TimeEvent te = new TimeEvent(payload, topic, origin, now, now,
+                    originRank, originIndex, sequence.getAndIncrement());
             insertSorted(te);
             if (driver) pending.add(origin);
             log.largeInfo(() -> "queued " + topic.name() + " @ " + payload.getDatumTime()

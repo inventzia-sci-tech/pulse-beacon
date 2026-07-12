@@ -20,9 +20,17 @@ import java.util.Comparator;
  * processed in the order of the wall-clock time they represent, not the order
  * they arrived. This is the correct key for deterministic causal replay.
  *
- * <p>Tiebreaker: {@link TimeEvent#beginTstamp()} ascending — when two events
- * share the same {@code eventTime}, the one that was received earlier by its
- * gateway is processed first.
+ * <p>Tie-break (all deterministic, so equal-{@code eventTime} events order the
+ * same on every run/JVM rather than by thread arrival):
+ * <ol>
+ *   <li>{@link TimeEvent#originRank()} — high-priority origins (rank 0) before
+ *       normal (rank 1);</li>
+ *   <li>{@link TimeEvent#originIndex()} — the origin's stable registration index;</li>
+ *   <li>{@link TimeEvent#sequence()} — enqueue order, which disambiguates several
+ *       events from one non-permit-gated origin at the same tick (e.g. actor
+ *       publishes). The write permit already guarantees at most one pending event
+ *       per clock-driving gateway, so rank+index alone fully order those.</li>
+ * </ol>
  */
 final class TimeEventComparator implements Comparator<TimeEvent> {
 
@@ -30,6 +38,10 @@ final class TimeEventComparator implements Comparator<TimeEvent> {
     public int compare(TimeEvent a, TimeEvent b) {
         int c = Long.compare(a.eventTime(), b.eventTime());
         if (c != 0) return c;
-        return Long.compare(a.beginTstamp(), b.beginTstamp());
+        c = Integer.compare(a.originRank(), b.originRank());
+        if (c != 0) return c;
+        c = Integer.compare(a.originIndex(), b.originIndex());
+        if (c != 0) return c;
+        return Long.compare(a.sequence(), b.sequence());
     }
 }

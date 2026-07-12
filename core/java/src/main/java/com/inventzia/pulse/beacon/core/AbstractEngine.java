@@ -15,7 +15,9 @@ import com.inventzia.pulse.data.datum.Datum;
 
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -87,6 +89,21 @@ public abstract class AbstractEngine extends AbstractGateway {
     private volatile long     lastEventTime = -1L;
     private final AtomicBoolean startUpDone = new AtomicBoolean(false);
 
+    /**
+     * Last event time accepted from each source gateway, for the per-gateway
+     * monotonicity guard (compressed time). Each gateway feeds on its own thread and
+     * only updates its own entry, so a plain {@link ConcurrentHashMap} suffices.
+     */
+    private final Map<Gateway, Long> lastAcceptedTime = new ConcurrentHashMap<>();
+
+    // Deterministic equal-event-time tie-break inputs (see TimeEventComparator):
+    /** Stable per-origin index, assigned in registration order (never from iteration). */
+    private final Map<Gateway, Integer> originIndex = new ConcurrentHashMap<>();
+    private final java.util.concurrent.atomic.AtomicInteger nextOriginIndex =
+            new java.util.concurrent.atomic.AtomicInteger();
+    /** Origins (source gateways) registered high priority — their equal-time events sort first. */
+    private final Set<Gateway> highPriorityOrigins = ConcurrentHashMap.newKeySet();
+
     // ------------------------------------------------------------------
     // Construction
     // ------------------------------------------------------------------
@@ -152,11 +169,42 @@ public abstract class AbstractEngine extends AbstractGateway {
         }
         if (status() == GatewayStatus.FINALIZE) return;
 
+        // Per-gateway monotonicity: a source may not go backwards in time. A later
+        // submission with an earlier timestamp than this gateway already emitted would
+        // reorder already-dispatched history and break the deterministic merge, so it is
+        // rejected (dropped). See acceptMonotonic.
+        if (origin != null && !acceptMonotonic(origin, payload.getDatumTime(), topic)) {
+            return;
+        }
+
         try {
-            timeMachine.addEvent(payload, topic, origin != null ? origin : this);
+            Gateway o = origin != null ? origin : this;
+            timeMachine.addEvent(payload, topic, o, rankOf(o), indexOf(o));
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
+    }
+
+    /**
+     * Enforces per-gateway timestamp monotonicity: the source's own stream must be
+     * non-decreasing. Same-tick ({@code ==}) and later events advance the gateway's
+     * frontier and are accepted; a strictly-earlier event is a violation — dropped and
+     * logged, without advancing the frontier or failing the gateway (a hard failure on
+     * the gateway's thread would leave the TimeMachine barrier waiting for a dead
+     * clock-driver). Compressed-time only; REAL_TIME is arrival-ordered by contract.
+     *
+     * @return {@code true} to accept the event, {@code false} to drop it
+     */
+    private boolean acceptMonotonic(Gateway origin, long time, Topic<?> topic) {
+        Long last = lastAcceptedTime.get(origin);
+        if (last != null && time < last) {
+            log.severe("monotonicity violation: gateway '" + origin.name() + "' submitted "
+                    + topic.name() + " @ " + time + " after " + last
+                    + "; dropping (an earlier timestamp would retroactively reorder dispatched history)");
+            return false;
+        }
+        lastAcceptedTime.put(origin, time);
+        return true;
     }
 
     private <P extends Datum> void addToLiveQueue(Topic<P> topic, P payload, Gateway origin) {
@@ -165,7 +213,7 @@ public abstract class AbstractEngine extends AbstractGateway {
             return;
         }
         long now = System.currentTimeMillis();
-        liveQueue.offer(new TimeEvent(payload, topic, origin != null ? origin : this, now, now));
+        liveQueue.offer(TimeEvent.unordered(payload, topic, origin != null ? origin : this, now, now));
     }
 
     // ------------------------------------------------------------------
@@ -208,10 +256,37 @@ public abstract class AbstractEngine extends AbstractGateway {
     // Gateway — registration overrides
     // ------------------------------------------------------------------
 
-    /** Registers a publisher and tracks it in the active gateway set. */
+    /** Registers a publisher (at normal priority) and tracks it in the active gateway set. */
     @Override
     public synchronized void registerPublisher(Gateway publisher, Topic<?> topic, List<String> keys) {
+        // Assign a stable index in registration-call order (the first time this gateway is
+        // registered), for the deterministic equal-event-time tie-break.
+        originIndex.computeIfAbsent(publisher, g -> nextOriginIndex.getAndIncrement());
         super.registerPublisher(publisher, topic, keys);
+    }
+
+    /**
+     * Registers a publisher, optionally as <b>high priority</b>: among events with the
+     * same event time, a high-priority source's events are dispatched before a
+     * normal-priority source's (see {@link TimeEventComparator}). Priority affects only
+     * this equal-time tie-break, not which events are produced.
+     */
+    public synchronized void registerPublisher(Gateway publisher, Topic<?> topic, List<String> keys,
+                                               boolean highPriority) {
+        if (highPriority) {
+            highPriorityOrigins.add(publisher);
+        }
+        registerPublisher(publisher, topic, keys);
+    }
+
+    /** The origin's tie-break rank: 0 (high priority) sorts before 1 (normal). */
+    private int rankOf(Gateway origin) {
+        return highPriorityOrigins.contains(origin) ? 0 : 1;
+    }
+
+    /** The origin's stable tie-break index (registration order; assigned lazily for the engine itself). */
+    private int indexOf(Gateway origin) {
+        return originIndex.computeIfAbsent(origin, g -> nextOriginIndex.getAndIncrement());
     }
 
     /**
@@ -553,16 +628,15 @@ public abstract class AbstractEngine extends AbstractGateway {
     private void enqueueShutdown(long atTime) {
         long shutdownTime = Math.max(atTime, endTime() + 1L);
         EngineCommand cmd = new EngineCommand(EngineCommand.Kind.SHUTDOWN, shutdownTime);
-        long now = System.currentTimeMillis();
-        TimeEvent te = new TimeEvent(cmd, ENGINE_COMMAND_TOPIC, this, now, now);
         if (operatingMode() == OperatingMode.COMPRESSED_TIME) {
             try {
-                timeMachine.addEvent(cmd, ENGINE_COMMAND_TOPIC, this);
+                timeMachine.addEvent(cmd, ENGINE_COMMAND_TOPIC, this, rankOf(this), indexOf(this));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
         } else {
-            liveQueue.offer(te);
+            long now = System.currentTimeMillis();
+            liveQueue.offer(TimeEvent.unordered(cmd, ENGINE_COMMAND_TOPIC, this, now, now));
         }
     }
 

@@ -44,18 +44,39 @@ import java.util.Objects;
  *   <li>{@link #readTstamp()} — epoch millis when the event was placed into
  *       the {@code TimeMachine} queue.</li>
  * </ul>
+ *
+ * <p><b>Deterministic ordering.</b> {@link #originRank()}, {@link #originIndex()},
+ * and {@link #sequence()} give the {@link TimeMachine} a stable tie-break for
+ * events with equal {@link #eventTime()}, so a compressed-time replay is
+ * reproducible rather than dependent on thread arrival: order by event time, then
+ * by the origin's rank (high-priority before normal), then by the origin's stable
+ * registration index, then by the enqueue sequence (disambiguates several events
+ * from one non-permit-gated origin, e.g. actor publishes at the same tick). These
+ * are unused by the real-time FIFO — see {@link #unordered}.
  */
 public record TimeEvent(
         Datum    payload,
         Topic<?> topic,
         Gateway  origin,
         long     beginTstamp,
-        long     readTstamp
+        long     readTstamp,
+        int      originRank,
+        int      originIndex,
+        long     sequence
 ) {
     public TimeEvent {
         Objects.requireNonNull(payload, "payload must not be null");
         Objects.requireNonNull(topic,   "topic must not be null");
         Objects.requireNonNull(origin,  "origin must not be null");
+    }
+
+    /**
+     * A {@code TimeEvent} for a queue that does not order by the merge comparator
+     * (the real-time FIFO {@code liveQueue}); the ordering fields default to zero.
+     */
+    public static TimeEvent unordered(Datum payload, Topic<?> topic, Gateway origin,
+                                      long beginTstamp, long readTstamp) {
+        return new TimeEvent(payload, topic, origin, beginTstamp, readTstamp, 0, 0, 0L);
     }
 
     /** The routing key of the carried payload. */
