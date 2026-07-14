@@ -91,8 +91,9 @@ public abstract class AbstractEngine extends AbstractGateway {
 
     /**
      * Last event time accepted from each source gateway, for the per-gateway
-     * monotonicity guard (compressed time). Each gateway feeds on its own thread and
-     * only updates its own entry, so a plain {@link ConcurrentHashMap} suffices.
+     * monotonicity guard (compressed time). See {@link #acceptMonotonic} for the
+     * single-producer-per-gateway contract that lets the {@link ConcurrentHashMap}
+     * carry the read-then-write without a per-gateway lock.
      */
     private final Map<Gateway, Long> lastAcceptedTime = new ConcurrentHashMap<>();
 
@@ -192,6 +193,15 @@ public abstract class AbstractEngine extends AbstractGateway {
      * logged, without advancing the frontier or failing the gateway (a hard failure on
      * the gateway's thread would leave the TimeMachine barrier waiting for a dead
      * clock-driver). Compressed-time only; REAL_TIME is arrival-ordered by contract.
+     *
+     * <p><b>Threading contract.</b> The read-then-write of {@code lastAcceptedTime} is
+     * <em>not</em> atomic, and relies on a single producer thread per gateway: a gateway
+     * feeds the engine only from its own source loop (see {@code Gateway.run}), so no two
+     * threads ever call this with the same {@code origin} concurrently, and each origin's
+     * frontier is touched by exactly one thread. For clock-driving gateways the
+     * TimeMachine write permit reinforces this (at most one event in flight per gateway).
+     * A gateway that fanned events in from several threads would violate this contract and
+     * must serialize its own emission before handing off to the engine.
      *
      * @return {@code true} to accept the event, {@code false} to drop it
      */

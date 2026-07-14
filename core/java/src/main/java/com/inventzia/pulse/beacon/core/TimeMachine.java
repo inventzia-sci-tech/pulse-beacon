@@ -49,10 +49,13 @@ import java.util.concurrent.atomic.AtomicLong;
  * ones.
  *
  * <h2>Event ordering</h2>
- * <p>Events are ordered by {@link Event#eventTime()} (the wall-clock time the
- * event represents), with {@link TimeEvent#beginTstamp()} as tiebreaker.
- * This is semantically correct for causal replay: events are processed in the
- * order they occurred, not the order they arrived.
+ * <p>Events are ordered by {@link TimeEvent#eventTime()} (the logical time the
+ * event represents), with a <em>deterministic</em> tie-break for equal times —
+ * origin rank, then stable registration index, then enqueue sequence (see
+ * {@link TimeEventComparator}). This is semantically correct for causal replay and
+ * reproducible across runs: events are processed in the order they occurred, not
+ * the order they arrived (which the old wall-clock {@code beginTstamp} tie-break
+ * could not guarantee).
  *
  * <h2>Thread model</h2>
  * <p>Designed for <em>multiple producer threads</em> (one per clock-driving
