@@ -86,7 +86,11 @@ assert from_tagged_json(to_tagged_json(hb)) == hb, "roundtrip mismatch"
 PY
 
 echo "== 4. Regeneration is packaging-safe (zero diff + public imports) =="
-"$PY" "$DATA/schemas/schemas-generators/generate_python.py" \
+# The generator needs PyYAML (the pulse-data[generator] extra). Install it into the
+# smoke venv and run the generator there, so this check is self-contained rather
+# than assuming the caller's interpreter already has PyYAML.
+"$WORK/venv/bin/pip" install -q pyyaml
+"$WORK/venv/bin/python" "$DATA/schemas/schemas-generators/generate_python.py" \
     --schemas-dir "$DATA/schemas/schemas_yaml" --output-dir "$WORK/regen" \
     --base-package inventzia.pulse.data.schemas >/dev/null
 # The generator owns exactly the schemas/ subtree (PEP 420, no __init__.py); the
