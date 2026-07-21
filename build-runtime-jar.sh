@@ -33,6 +33,35 @@ if [[ ! -f "$SHADED" ]]; then
     exit 1
 fi
 
+# Redistribution guard: license files must survive shading under unique paths,
+# and the generated NOTICE must attribute this bundle to Inventzia rather than
+# inheriting the transformer's Apache Software Foundation default header.
+REQUIRED_LICENSES=(
+    META-INF/LICENSES/README.txt
+    META-INF/LICENSES/inventzia/LICENSE-AGPL-3.0
+    META-INF/LICENSES/inventzia/LICENSE-COMMERCIAL.txt
+    META-INF/LICENSES/third-party/Apache-2.0.txt
+    META-INF/LICENSES/third-party/LGPL-2.1.txt
+    META-INF/LICENSES/third-party/MIT-SLF4J.txt
+    META-INF/THIRD-PARTY.txt
+    META-INF/NOTICE
+)
+JAR_ENTRIES="$(jar tf "$SHADED")"
+for entry in "${REQUIRED_LICENSES[@]}"; do
+    grep -Fxq "$entry" <<<"$JAR_ENTRIES" || {
+        echo "ERROR: runtime jar is missing required licensing resource $entry" >&2
+        exit 1
+    }
+done
+
+CHECK_DIR="$(mktemp -d)"
+trap 'rm -rf "$CHECK_DIR"' EXIT
+( cd "$CHECK_DIR" && jar xf "$SHADED" META-INF/NOTICE )
+head -n 5 "$CHECK_DIR/META-INF/NOTICE" | grep -Fq "Inventzia Science and Technology Ltd." || {
+    echo "ERROR: runtime jar NOTICE has an incorrect product copyright header" >&2
+    exit 1
+}
+
 mkdir -p "$DEST_DIR"
 cp "$SHADED" "$DEST_JAR"
 echo "==> Staged $(basename "$SHADED") -> $DEST_JAR ($(du -h "$DEST_JAR" | cut -f1))"

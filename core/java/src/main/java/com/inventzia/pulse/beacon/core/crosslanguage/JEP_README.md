@@ -5,6 +5,10 @@ Copyright (c) 2013-2026 Magrino Bini, Paola Apruzzese, Inventzia Science and Tec
 
 # JEP setup — running Python components under the JVM (Java-host direction)
 
+> **Experimental in the first beta.** The JPype bridge is exercised against installed
+> release artifacts in CI. JEP requires a platform-specific native runtime and currently
+> has a local parity test only; it is not yet a supported release path.
+
 This is the environment guide for the **Java-host** cross-language direction: the JVM
 embeds CPython via **[JEP](https://github.com/ninia/jep)** and runs Python
 `beacon.core` components in-process. The code side is `JepLauncher.java` (this
@@ -26,7 +30,7 @@ Windows build are separate artifacts — you cannot share one across OSes.
 
 | | value |
 |---|---|
-| JEP | **4.3.1** (matches `black.ninia:jep:4.3.1` in `pom.xml`) |
+| JEP | **4.2.2** (matches `black.ninia:jep:4.2.2` in `pom.xml`) |
 | Python | **3.11** (the interpreter JEP embeds; match major.minor to the jep build) |
 | Java | 17+ (build and run) |
 | Python runtime deps | **`pydantic`** only (everything else the components import is stdlib) |

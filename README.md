@@ -166,13 +166,14 @@ parity is also asserted as a pytest:
 conda run -n pulse python -m pytest tests/test_historic_run_jpype.py
 ```
 
-**Java-host (JEP) counterparts** run the *same* Python components with the JVM as host (the opposite
+**Experimental Java-host (JEP) counterparts** run the *same* Python components with the JVM as host (the opposite
 embedding direction): `examples/HistoricRunJepExample.java` and `examples/RealTimeRunJepExample.java`,
 driven by `crosslanguage/JepLauncher.java` + the Python factory `crosslanguage/jep_host.py`. JEP needs
 a native setup (jar + `libjep`/`jep.dll` + libpython) — see
 [`core/java/.../crosslanguage/JEP_README.md`](./core/java/src/main/java/com/inventzia/pulse/beacon/core/crosslanguage/JEP_README.md).
 Run either with `core/java/run-jep-example.sh [ExampleName]`; the historical run's parity is a pytest
-(`tests/test_historic_run_jep.py`).
+(`tests/test_historic_run_jep.py`). JEP is not part of release CI yet, so the beta supports JPype as
+its production-facing bridge and exposes JEP for evaluation only.
 
 ## Current status
 
@@ -197,8 +198,8 @@ all-Java event-time merge). The ZMQ out-of-process socket transport remains plan
 | Cross-language Java half | `core.crosslanguage.CrossLanguageActor` / `CrossLanguageGateway` | ✅ |
 | Python `beacon.core` | actor/gateway bases, channel, dispatch, `Reporter`/`ComponentReporter` mirror, `CrossLanguageStreamer` | ✅ |
 | Python-host launchers | JPype historical run (`historic_run_jpype`, parity verified) and real-time run (`realtime_run_jpype`, mirrors `RealTimeHeartbeatExample`) | ✅ |
-| Java-host launcher | JEP historical run (`HistoricRunJepExample`, parity verified) and real-time run (`RealTimeRunJepExample`) via `JepLauncher` + `jep_host.py` — the JVM hosts CPython | ✅ |
-| Cross-language parity tests | `tests/test_historic_run_jpype.py` (Python-host) and `tests/test_historic_run_jep.py` (Java-host); both assert the Python printer reproduces the all-Java merge | ✅ |
+| Java-host launcher | Experimental JEP historical and real-time runs via `JepLauncher` + `jep_host.py`; native release CI is still pending | 🧪 experimental |
+| Cross-language parity tests | JPype runs in strict installed-artifact CI; JEP has a local parity test requiring native setup | 🟡 partial |
 | Socket transport | ZMQ gateways | ⏳ planned |
 
 ## Requirements

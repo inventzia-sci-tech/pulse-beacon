@@ -133,6 +133,22 @@
     </dependencies>
 
     <build>
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+            </resource>
+            <!-- Keep the product licenses under stable, non-colliding paths in
+                 both the thin and shaded jars. pulse-data uses the same terms. -->
+            <resource>
+                <directory>${project.basedir}/../..</directory>
+                <targetPath>META-INF/LICENSES/inventzia</targetPath>
+                <includes>
+                    <include>LICENSE-AGPL-3.0</include>
+                    <include>LICENSE-COMMERCIAL.txt</include>
+                    <include>NOTICE</include>
+                </includes>
+            </resource>
+        </resources>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -210,6 +226,10 @@
                                         <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheNoticeResourceTransformer">
                                             <addHeader>false</addHeader>
                                             <projectName>pulse-beacon runtime bundle</projectName>
+                                            <organizationName>Inventzia Science and Technology Ltd.</organizationName>
+                                            <organizationURL>https://inventzia.com</organizationURL>
+                                            <inceptionYear>2013</inceptionYear>
+                                            <copyright>Copyright (c) 2013-2026 Magrino Bini, Paola Apruzzese, Inventzia Science and Technology Ltd.</copyright>
                                         </transformer>
                                         <!-- Human-readable third-party license inventory (generated above). -->
                                         <transformer implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">

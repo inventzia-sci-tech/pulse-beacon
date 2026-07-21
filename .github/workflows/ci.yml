@@ -12,8 +12,10 @@ permissions:
 env:
   # pulse-beacon depends on pulse-data (Java jar + Python). CI checks it out as a
   # sibling; set CI_PAT in repo secrets if pulse-data is private (else GITHUB_TOKEN).
+  # Tagged builds resolve both repositories at the same immutable release tag;
+  # ordinary branch/PR builds continue to test against pulse-data main.
   PULSE_DATA_REPO: inventzia-sci-tech/pulse-data
-  PULSE_DATA_REF: main
+  PULSE_DATA_REF: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'main' }}
 
 jobs:
   # Finding 4: pulse-beacon-core builds from a clean Maven env — jep resolves from
@@ -118,8 +120,10 @@ jobs:
       - name: Install wheels + run JPype integration (strict, against the artifact)
         run: |
           python -m venv /tmp/iv
+          BEACON_WHEEL="$(find "$GITHUB_WORKSPACE/wheels" -maxdepth 1 -name 'pulse_beacon-*.whl' -print -quit)"
+          test -n "$BEACON_WHEEL"
           /tmp/iv/bin/pip install "$GITHUB_WORKSPACE"/wheels/pulse_data-*.whl \
-            "$GITHUB_WORKSPACE/wheels/pulse_beacon-0.1.0-py3-none-any.whl[jpype]" pytest
+            "${BEACON_WHEEL}[jpype]" pytest
           # JAVA_HOME comes from setup-java; PULSE_REQUIRE_INTEGRATION makes a missing
           # prerequisite a failure, not a skip. (The JEP subprocess test needs a source
           # Java build + native jep, so it is not part of this installed-artifact job.)
@@ -127,9 +131,9 @@ jobs:
             "$GITHUB_WORKSPACE/pulse-beacon/tests/test_historic_run_jpype.py" \
             "$GITHUB_WORKSPACE/pulse-beacon/tests/test_codec_cross_language_parity.py"
 
-  # Release: on a vX.Y.Z tag, build the wheels through the version gate (which rejects
-  # SNAPSHOT/mismatched versions) and upload them as artifacts. Publishing to PyPI /
-  # Maven Central is a separate, credentialed step (see PackagingAndPublishingRelease §5).
+  # Release: on a vX.Y.Z tag, check out the same tag in both repositories, prove
+  # that it matches both package versions, and record the resolved commit SHAs.
+  # Publishing to PyPI / Maven Central remains a separate credentialed step.
   release:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [maven, dist, integration]
@@ -141,7 +145,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: ${{ env.PULSE_DATA_REPO }}
-          ref: ${{ env.PULSE_DATA_REF }}
+          ref: ${{ github.ref_name }}
           path: pulse-data
           token: ${{ secrets.CI_PAT || github.token }}
       - uses: actions/setup-java@v4
@@ -154,11 +158,24 @@ jobs:
           python-version: '3.11'
       - name: Install pulse-data jar to local .m2
         run: mvn -B -ntp -f pulse-data/pom.xml install -DskipTests
-      - name: Release build (version gate rejects SNAPSHOT/mismatch)
+      - name: Validate immutable release inputs
+        run: |
+          test "$(git -C pulse-beacon describe --tags --exact-match)" = "$GITHUB_REF_NAME"
+          test "$(git -C pulse-data describe --tags --exact-match)" = "$GITHUB_REF_NAME"
+          cd pulse-beacon
+          bash check-versions.sh --release --tag "$GITHUB_REF_NAME"
+      - name: Release build
         run: |
           python -m pip install --upgrade build
-          cd pulse-beacon && bash release-build.sh "$GITHUB_WORKSPACE/dist"
+          bash pulse-beacon/release-build.sh "$GITHUB_WORKSPACE/dist"
+          {
+            echo "tag=$GITHUB_REF_NAME"
+            echo "pulse-beacon=$(git -C pulse-beacon rev-parse HEAD)"
+            echo "pulse-data=$(git -C pulse-data rev-parse HEAD)"
+          } > dist/release-inputs.txt
       - uses: actions/upload-artifact@v4
         with:
           name: release-wheels
-          path: dist/*.whl
+          path: |
+            dist/*.whl
+            dist/release-inputs.txt

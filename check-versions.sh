@@ -13,14 +13,23 @@
 #     embeds Java pulse-data, so the installed Python pulse-data must match, not just
 #     be <0.2).
 #
-#   bash check-versions.sh [--release]
+#   bash check-versions.sh [--release] [--tag vX.Y.Z]
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"          # pulse-beacon repo root
 BEACON="$HERE"
 DATA="$(cd "${PULSE_DATA_DIR:-$HERE/../pulse-data}" && pwd)"  # sibling pulse-data (override: PULSE_DATA_DIR)
 RELEASE="${PULSE_RELEASE:-}"
-[ "${1:-}" = "--release" ] && RELEASE=1
+TAG=""
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --release) RELEASE=1; shift ;;
+        --tag)
+            [ "$#" -ge 2 ] || { echo "--tag requires a value" >&2; exit 2; }
+            TAG="$2"; shift 2 ;;
+        *) echo "unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
 
 fail() { echo "  ❌ $1" >&2; exit 1; }
 ok()   { echo "  ✅ $1"; }
@@ -51,6 +60,9 @@ if [ -n "$RELEASE" ]; then
     [ "$BEACON_POM" = "$BEACON_PY" ] || fail "pulse-beacon version mismatch: maven $BEACON_POM != python $BEACON_PY"
     [ "$JAR_DATA"  = "$DATA_PY" ]   || fail "runtime jar embeds pulse-data $JAR_DATA, but Python pulse-data is $DATA_PY — they must match"
     [ "$PY_DATADEP" = "pulse-data==$DATA_PY" ] || fail "pulse-beacon must pin 'pulse-data==$DATA_PY' for release (found '$PY_DATADEP'); the jar embeds an exact pulse-data, so <0.2 is too loose"
+    if [ -n "$TAG" ]; then
+        [ "$TAG" = "v$BEACON_PY" ] || fail "release tag $TAG does not match package version v$BEACON_PY"
+    fi
     ok "release versions consistent: pulse-data=$DATA_PY, pulse-beacon=$BEACON_PY (final, exact, jar+wheel pulse-data pinned)"
 else
     echo "== dev mode: base versions align (Maven -SNAPSHOT allowed) =="
