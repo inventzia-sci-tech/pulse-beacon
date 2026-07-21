@@ -33,9 +33,12 @@ but fail under ``PULSE_REQUIRE_INTEGRATION`` (release CI).
 
 import json
 
+from decimal import Decimal
+
 import pytest
 
 from inventzia.pulse.data.datum.codec import from_tagged_json, to_tagged_json
+from inventzia.pulse.data.schemas.common.vector_value import VectorValue
 from inventzia.pulse.data.schemas.platform.heart_beat import HeartBeat
 from inventzia.pulse.data.schemas.platform.text_message import TextMessage
 
@@ -58,8 +61,15 @@ def _java_codec():
     [
         TextMessage(msgKey="ALERT", msgTime=1_283_630_000_000, text="hello world"),
         HeartBeat(beatKey="BEAT", beatTime=1_283_630_001_500),
+        # Exercises the decimal-list + labelled-vector path (BigDecimal <-> Decimal as
+        # strings; List<BigDecimal>/List<String> <-> list).
+        VectorValue(key="AAPL.MACD", time=1_283_630_002_000,
+                    values=[Decimal("1.2"), Decimal("0.8"), Decimal("0.4")],
+                    valueIds=["macd", "signal", "hist"]),
+        # Scalar = length-1, with the optional valueIds absent (omit-vs-null parity).
+        VectorValue(key="AAPL.RSI", time=1_283_630_003_000, values=[Decimal("55.5")]),
     ],
-    ids=["TextMessage", "HeartBeat"],
+    ids=["TextMessage", "HeartBeat", "VectorValue-vector", "VectorValue-scalar"],
 )
 def test_tagged_envelope_is_identical_round_tripped_through_java(datum):
     codec = _java_codec()
@@ -72,3 +82,18 @@ def test_tagged_envelope_is_identical_round_tripped_through_java(datum):
     # Identity through the foreign language. Any field one side emits but the
     # other does not is dropped on the ignoring side's re-encode, diverging these.
     assert json.loads(p1) == json.loads(j1) == json.loads(p2)
+
+
+def test_vector_value_parallel_length_enforced():
+    """The valueIds/values equal-length invariant is enforced in *both* languages."""
+    # Python — the generated Pydantic model_validator.
+    with pytest.raises(Exception):
+        VectorValue(key="X", time=1, values=[Decimal("1"), Decimal("2")], valueIds=["only-one"])
+
+    # Java — the generated record's compact constructor.
+    from jpype import JClass
+    VV = JClass("com.inventzia.pulse.data.schemas.common.VectorValue")
+    BigDecimal = JClass("java.math.BigDecimal")
+    JList = JClass("java.util.List")
+    with pytest.raises(Exception):
+        VV("X", 1, JList.of(BigDecimal("1"), BigDecimal("2")), JList.of("only-one"))
