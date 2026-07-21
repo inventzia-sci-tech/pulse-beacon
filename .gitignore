@@ -16,3 +16,9 @@ __pycache__/
 .project
 .classpath
 .settings/
+
+# Bundled Beacon runtime jar (build artifact, produced by build-runtime-jar.sh)
+src/inventzia/pulse/beacon/_runtime/*.jar
+/dist/
+/build/
+*.egg-info/

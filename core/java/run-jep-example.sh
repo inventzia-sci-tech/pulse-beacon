@@ -5,7 +5,7 @@
 # Run a Java-host (JEP) cross-language example manually. Pass a simple example name
 # (default: HistoricRunJepExample; e.g. RealTimeRunJepExample) or a fully-qualified
 # main class. The automated equivalent of the historic run is
-# core/python/tests/test_historic_run_jep.py.
+# tests/test_historic_run_jep.py.
 #
 # Prereqs: the `pulse` conda env active (openjdk + maven + jep), and the module
 # built (`mvn -o package -DskipTests` + staged jars, or at least `mvn -o compile`).

@@ -75,19 +75,20 @@ public final class JepLauncher {
 
     /** The Python module holding the generic factory functions ({@code run_consume} / {@code run_produce}). */
     private static final String FACTORY_MODULE =
-            "core.python.inventzia.pulse.beacon.core.crosslanguage.jep_host";
+            "inventzia.pulse.beacon.core.crosslanguage.jep_host";
 
     /** The Python logging facade module (its default sink is redirected to the Java logger). */
     private static final String REPORTER_MODULE =
-            "core.python.inventzia.pulse.beacon.core.reporter";
+            "inventzia.pulse.beacon.core.reporter";
 
     private final ComponentReporter log = new ComponentReporter("jep-launcher", Slf4jReporter.shared());
     private final List<String> pythonPath;
 
     /**
-     * @param pythonPath directories to prepend to each interpreter's {@code sys.path}
-     *                   so the Python packages resolve (the repo roots, in the project's
-     *                   repo-root-prefixed import style)
+     * @param pythonPath directories to prepend to each interpreter's {@code sys.path} so the
+     *                   public {@code inventzia.pulse.*} packages resolve from a source checkout
+     *                   (the packages' {@code src/} roots); may be empty when they are
+     *                   pip-installed into the embedded interpreter's environment
      */
     public JepLauncher(List<String> pythonPath) {
         this.pythonPath = List.copyOf(pythonPath);

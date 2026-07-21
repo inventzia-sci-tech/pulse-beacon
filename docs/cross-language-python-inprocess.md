@@ -253,7 +253,7 @@ The home for building consumers **and** gateways in Python. Mirrors the Java pac
 (`com.inventzia.pulse.beacon.core`) and the pulse-data Python layout:
 
 ```
-core/python/inventzia/pulse/beacon/core/
+src/inventzia/pulse/beacon/core/
   actor.py        # BeaconActor: on_startup / on_event / on_shutdown  (+ publish via channel)
   gateway.py      # BeaconGateway: produce() [source]  and/or  on_event() [sink]
   channel.py      # BeaconChannel: publish(topic, datum)  (mirror of the actor's bound Pub bus)
@@ -337,7 +337,7 @@ hands it to `JepLauncher` — the Java-side infrastructure in `crosslanguage/` (
 `jpype_host`):
 
 ```java
-JepLauncher jep = new JepLauncher(List.of(beaconRoot, dataRoot));  // repo roots for sys.path
+JepLauncher jep = new JepLauncher(List.of(beaconSrc, dataSrc));  // the packages' src/ roots for sys.path
 jep.launch(new JepLauncher.Component("py-print", pyPrint, CONSUME,
         "…examples.recording_print_consumer.RecordingPrinter", List.of("print-actor", received)))
    .start();
@@ -391,8 +391,8 @@ Run recipe (from `New/`, in the shared `pulse` env — its bundled JDK sets `JAV
 exported manually):
 
 ```bash
-export PYTHONPATH="pulse-data/datum/python:pulse-data/schemas/schemas_py:pulse-beacon/core/python"
-conda run -n pulse python pulse-beacon/core/python/inventzia/pulse/beacon/core/examples/historic_run_jpype.py
+pip install -e ./pulse-data -e ./pulse-beacon    # once; public inventzia.* imports, no PYTHONPATH
+conda run -n pulse python -m inventzia.pulse.beacon.core.examples.historic_run_jpype
 ```
 
 Jars are staged into `core/java/jars/` (build artifacts) from `core/java/` with:
@@ -409,7 +409,7 @@ Two gotchas learned, now handled:
    a cross-language exception.
 2. pulse-data: generated `TYPE_ID → class` registry in Java **and** Python, and `DatumCodec`
    emitting the `TYPE_ID` envelope field + a self-describing `fromJson(json)` (see D2).
-3. pulse-beacon Python `core/python/inventzia/pulse/beacon/core/`: `actor.py`, `gateway.py`,
+3. pulse-beacon Python `src/inventzia/pulse/beacon/core/`: `actor.py`, `gateway.py`,
    `channel.py`, `dispatch.py`, `reporter.py` (the Python mirror of the Java `Reporter` facade, so
    both languages log identically and component bases ship a configured logger), and
    `crosslanguage/cross_language_streamer.py`, `crosslanguage/jpype_host.py`. Lifecycle hooks are
@@ -422,9 +422,10 @@ Two gotchas learned, now handled:
 
 Follow-ups landed since milestone 1:
 - **Parity as a test.** `historic_run_jpype.run()` returns `(received, status)`; `tests/test_historic_run_jpype.py`
-  (pytest) asserts `received == EXPECTED` and `COMPLETE`, skipping if the jars are not staged. A
-  `tests/conftest.py` puts the two repo roots on `sys.path` (the test-time mirror of
-  `PYTHONPATH="pulse-beacon:pulse-data"`).
+  (pytest, `integration` marker) asserts `received == EXPECTED` and `COMPLETE`. It runs against the
+  *installed* packages and resolves the Beacon classpath via `resolve_classpath()` (bundled runtime
+  jar or staged jars); a missing prerequisite skips locally but fails under `PULSE_REQUIRE_INTEGRATION`.
+  There is no `sys.path`/`PYTHONPATH` manipulation — `pip install -e ./pulse-data -e ./pulse-beacon`.
 - **Real-time counterpart.** `realtime_run_jpype.py` re-creates the Java `RealTimeHeartbeatExample`
   (three wall-clock heartbeats → a Python `PrintConsumer`), proving the bridge under REAL_TIME, not
   just compressed-time replay. It also wires the *reverse* direction: a Python `EchoConsumer`
@@ -436,17 +437,17 @@ Follow-ups landed since milestone 1:
 `crosslanguage/jep_host.py` re-create the same run with the JVM as host, reusing items 1–4
 unchanged; it prints `PARITY OK` (the Python printer, reached from Java, sees the exact 10-event
 merge; the Python echo publishes back to the Java sink). Automated as a subprocess parity test,
-`core/python/tests/test_historic_run_jep.py` (mirror of the JPype test). Both embedding directions
+`tests/test_historic_run_jep.py` (mirror of the JPype test). Both embedding directions
 now work off one set of Python components + streamer.
 
 Run (from `core/java`, in the `pulse` env): `conda run -n pulse ./run-jep-example.sh`. The launch
 needs three things beyond the normal classpath, all handled by the script/test:
 - **JEP jar on the classpath + `-Djava.library.path=<jep dir>`** for the native `libjep.so`, and
   **`LD_LIBRARY_PATH` including `$CONDA_PREFIX/lib`** so `libjep` finds the shared `libpython`.
-- The jep jar is a **`provided`** Maven dependency (`black.ninia:jep`), installed once into local
-  `.m2` from the pip build (see the pom comment); the module compiles against it but bundles nothing.
-- **`-Dpulse.repo.root=<New>`** so each interpreter puts the two repo roots on `sys.path` (the
-  repo-root-prefixed import style).
+- The jep jar is a **`provided`** Maven dependency (`black.ninia:jep:4.2.2`) resolved from **Maven
+  Central** (no `install-file`); the module compiles against it but bundles nothing.
+- **`-Dpulse.repo.root=<New>`** so each interpreter puts the two packages' `src/` roots on `sys.path`
+  (the public `inventzia.pulse.*` import style); redundant when the packages are pip-installed.
 
 Gotchas learned:
 - **JEP thread affinity.** A JEP (sub)interpreter is bound to its creating thread, so each streamer
@@ -478,7 +479,7 @@ Sink-only gateway example can follow once a Java→external example target exist
 
 ## 9. Decisions
 
-- **D1 — Python package home. RESOLVED.** `core/python/inventzia/pulse/beacon/core/` inside
+- **D1 — Python package home. RESOLVED.** `src/inventzia/pulse/beacon/core/` inside
   pulse-beacon, mirroring the Java package and the pulse-data Python layout. No separate repo.
 
 - **D2 — Self-describing decode via a `TYPE_ID` registry. RESOLVED: build it now.**

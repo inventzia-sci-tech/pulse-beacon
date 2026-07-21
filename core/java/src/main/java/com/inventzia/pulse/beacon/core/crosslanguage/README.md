@@ -17,7 +17,7 @@ boots whom* differs.
 **In-process, Python-host (JPype)** — a Python process boots the JVM.
 Rationale: launch/debug from a Python IDE (PyCharm); simplest to set up (pure pip).
 Driven from Python — no Java entry point here.
-Entry point: `core/python/.../examples/historic_run_jpype.py` (`jpype_host.py` boots the JVM).
+Entry point: `src/.../examples/historic_run_jpype.py` (`jpype_host.py` boots the JVM).
 
 **In-process, Java-host (JEP)** — the JVM boots CPython.
 Rationale: launch/debug from a Java IDE; keep the run Java-driven.

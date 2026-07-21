@@ -25,6 +25,7 @@
         Domain-agnostic event-driven engine core for pulse-beacon: bus interfaces,
         time machine, gateway and engine abstract bases.
     </description>
+    <url>https://inventzia.com</url>
     <inceptionYear>2013</inceptionYear>
 
     <organization>
@@ -44,6 +45,25 @@
             <comments>Contact operations@inventzia.com</comments>
         </license>
     </licenses>
+
+    <developers>
+        <developer>
+            <name>Magrino Bini</name>
+            <email>operations@inventzia.com</email>
+            <organization>Inventzia Science and Technology Ltd.</organization>
+            <organizationUrl>https://inventzia.com</organizationUrl>
+        </developer>
+        <developer>
+            <name>Paola Apruzzese</name>
+            <email>operations@inventzia.com</email>
+            <organization>Inventzia Science and Technology Ltd.</organization>
+            <organizationUrl>https://inventzia.com</organizationUrl>
+        </developer>
+    </developers>
+
+    <!-- TODO(before Maven Central publish): add the real <scm> coordinates
+         (connection / developerConnection / url). Not required to build the
+         source and javadoc jars produced by the `release` profile below. -->
 
     <properties>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -85,16 +105,15 @@
             <scope>runtime</scope>
         </dependency>
 
-        <!-- JEP: Java-host cross-language bridge (HistoricRunJepExample). Compile-only;
-             at runtime the pip-installed jep (jar + native libjep.so) from the `pulse`
-             env is used. Install into local .m2 once, e.g.:
-               mvn install:install-file \
-                 -Dfile=$CONDA_PREFIX/lib/python3.11/site-packages/jep/jep-4.3.1.jar \
-                 -DgroupId=black.ninia -DartifactId=jep -Dversion=4.3.1 -Dpackaging=jar -->
+        <!-- JEP: Java-host cross-language bridge (HistoricRunJepExample). Compile-only
+             (provided): resolved from Maven Central, so a clean `mvn verify` needs no manual
+             install-file. At runtime the pip-installed jep (jar + native libjep) from the
+             `pulse` env is used — pinned to the same 4.2.2 so compile and runtime match.
+             NB: keep this on a Central-published version; 4.3.x is pip-only (not on Central). -->
         <dependency>
             <groupId>black.ninia</groupId>
             <artifactId>jep</artifactId>
-            <version>4.3.1</version>
+            <version>4.2.2</version>
             <scope>provided</scope>
         </dependency>
 
@@ -127,4 +146,138 @@
             </plugin>
         </plugins>
     </build>
+
+    <profiles>
+        <!--
+          Runtime jar (Python-host distribution convenience). Opt-in: `mvn -Pruntime-jar package`.
+
+          Produces an *attached* shaded jar `pulse-beacon-core-<ver>-runtime.jar` (Beacon + its
+          runtime dependencies: pulse-data, jackson, slf4j, logback) alongside the normal thin
+          jar. The Python wheel embeds it (see pulse-beacon/build-runtime-jar.sh) so JPype starts
+          with no staged jars / PYTHONPATH / Maven on the consumer machine. Ordinary Java consumers
+          keep using the thin jar + transitive Maven deps and never build this.
+
+          `provided` (jep) and `test` scopes are excluded by the shade plugin, so the runtime jar
+          carries no JEP and no test libraries. For redistribution it bundles a generated
+          `META-INF/THIRD-PARTY.txt` license inventory (license-maven-plugin) and an aggregated
+          `META-INF/NOTICE` of the bundled jars' notices (shade ApacheNoticeResourceTransformer).
+        -->
+        <profile>
+            <id>runtime-jar</id>
+            <build>
+                <plugins>
+                    <!-- Generate a third-party license inventory for the bundled deps
+                         (redistribution: the shaded jar embeds jackson, slf4j, logback,
+                         jspecify, pulse-data). Runs before shade so it can be included. -->
+                    <plugin>
+                        <groupId>org.codehaus.mojo</groupId>
+                        <artifactId>license-maven-plugin</artifactId>
+                        <version>2.4.0</version>
+                        <executions>
+                            <execution>
+                                <id>aggregate-third-party</id>
+                                <phase>prepare-package</phase>
+                                <goals><goal>add-third-party</goal></goals>
+                                <configuration>
+                                    <outputDirectory>${project.build.directory}/generated-resources/licenses</outputDirectory>
+                                    <thirdPartyFilename>THIRD-PARTY.txt</thirdPartyFilename>
+                                    <!-- Match what the shaded jar actually bundles: runtime/compile
+                                         scopes only (jep is provided, junit/assertj are test). -->
+                                    <excludedScopes>test,provided</excludedScopes>
+                                    <includeTransitiveDependencies>true</includeTransitiveDependencies>
+                                    <failOnMissing>false</failOnMissing>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-shade-plugin</artifactId>
+                        <version>3.6.0</version>
+                        <executions>
+                            <execution>
+                                <phase>package</phase>
+                                <goals><goal>shade</goal></goals>
+                                <configuration>
+                                    <shadedArtifactAttached>true</shadedArtifactAttached>
+                                    <shadedClassifierName>runtime</shadedClassifierName>
+                                    <createDependencyReducedPom>false</createDependencyReducedPom>
+                                    <transformers>
+                                        <!-- Merge META-INF/services (logback, jackson modules)
+                                             so the shaded jar keeps working service discovery. -->
+                                        <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                                        <!-- Aggregate the bundled jars' own NOTICE files. -->
+                                        <transformer implementation="org.apache.maven.plugins.shade.resource.ApacheNoticeResourceTransformer">
+                                            <addHeader>false</addHeader>
+                                            <projectName>pulse-beacon runtime bundle</projectName>
+                                        </transformer>
+                                        <!-- Human-readable third-party license inventory (generated above). -->
+                                        <transformer implementation="org.apache.maven.plugins.shade.resource.IncludeResourceTransformer">
+                                            <resource>META-INF/THIRD-PARTY.txt</resource>
+                                            <file>${project.build.directory}/generated-resources/licenses/THIRD-PARTY.txt</file>
+                                        </transformer>
+                                    </transformers>
+                                    <filters>
+                                        <filter>
+                                            <artifact>*:*</artifact>
+                                            <excludes>
+                                                <exclude>META-INF/*.SF</exclude>
+                                                <exclude>META-INF/*.DSA</exclude>
+                                                <exclude>META-INF/*.RSA</exclude>
+                                                <exclude>module-info.class</exclude>
+                                            </excludes>
+                                        </filter>
+                                    </filters>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
+        <!--
+          Release: attach the source and javadoc jars Maven Central requires.
+          Opt-in (`mvn -Prelease ...`) so ordinary dev builds stay fast. GPG signing
+          and the central-publishing plugin are intentionally NOT here yet — they are
+          the actual-publish step (needs credentials); see
+          PackagingAndPublishingRelease.md §5.
+        -->
+        <profile>
+            <id>release</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-source-plugin</artifactId>
+                        <version>3.3.1</version>
+                        <executions>
+                            <execution>
+                                <id>attach-sources</id>
+                                <goals><goal>jar-no-fork</goal></goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-javadoc-plugin</artifactId>
+                        <version>3.11.2</version>
+                        <configuration>
+                            <!-- Publish javadoc jars without failing on incomplete tags
+                                 (missing @param/@return). Central requires the jar to exist,
+                                 not doclint-perfect docs. -->
+                            <doclint>none</doclint>
+                            <quiet>true</quiet>
+                        </configuration>
+                        <executions>
+                            <execution>
+                                <id>attach-javadocs</id>
+                                <goals><goal>jar</goal></goals>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
 </project>

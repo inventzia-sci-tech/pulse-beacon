@@ -1,0 +1,82 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Inventzia-Commercial
+# Copyright (c) 2013-2026 Magrino Bini, Paola Apruzzese, Inventzia Science and Technology Ltd.
+#
+# This file is part of pulse-beacon.
+#
+# pulse-beacon is dual-licensed:
+#   - Under the GNU Affero General Public License v3.0 or later (see LICENSE-AGPL-3.0).
+#   - Under a commercial license (see LICENSE-COMMERCIAL.txt).
+#     Contact operations@inventzia.com.
+
+[build-system]
+requires = ["setuptools>=77"]
+# In-tree backend that wraps setuptools to fail a wheel build when the bundled
+# runtime jar is missing (see _build_backend.py), so a release wheel cannot
+# silently omit it. Editable and sdist builds are unaffected.
+build-backend = "_build_backend"
+backend-path = ["."]
+
+[project]
+name = "pulse-beacon"
+version = "0.1.0"
+description = "Event-driven engine and in-process cross-language bridge for the Pulse platform (Python extension of the Java Beacon core)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "AGPL-3.0-or-later OR LicenseRef-Inventzia-Commercial"
+license-files = ["LICENSE-AGPL-3.0", "LICENSE-COMMERCIAL.txt", "NOTICE"]
+authors = [
+    { name = "Magrino Bini", email = "operations@inventzia.com" },
+    { name = "Paola Apruzzese", email = "operations@inventzia.com" },
+]
+maintainers = [
+    { name = "Inventzia Science and Technology Ltd.", email = "operations@inventzia.com" },
+]
+keywords = ["pulse", "event-driven", "algorithmic-trading", "jpype", "jep", "cross-language"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Java",
+    "Topic :: Office/Business :: Financial :: Investment",
+    "Operating System :: OS Independent",
+]
+
+# Core is bridge-agnostic: it only needs the shared data contract. The two JVM
+# bridge directions are opt-in extras because each pulls a heavy/native dependency
+# that a given deployment may not use.
+#
+# pulse-data is pinned exactly, not <0.2: the JPype runtime jar embeds Java
+# pulse-data of a specific version (same YAML-generated schemas / TYPE_IDs), so the
+# installed Python pulse-data must be that same version, not merely compatible.
+# Bumped in lockstep with the release (check-versions.sh --release enforces it).
+dependencies = [
+    "pulse-data==0.1.0",
+]
+
+[project.optional-dependencies]
+# Python-host direction: Python boots the JVM via JPype.
+jpype = ["jpype1>=1.5"]
+# Java-host direction: the JVM boots CPython via JEP (native, platform-specific build).
+jep = ["jep==4.2.2"]  # pinned to the Maven Central version so compile and runtime match (see pom)
+
+[project.urls]
+Homepage = "https://inventzia.com"
+
+# src/ layout, PEP 420 namespace packages — no __init__.py at inventzia/ or
+# inventzia/pulse/, so pulse-beacon shares the inventzia.pulse.* namespace with
+# pulse-data and the two install side by side. See pulse-data/pyproject.toml.
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["inventzia*"]
+namespaces = true
+
+# Bundle the shaded Beacon runtime jar (staged by build-runtime-jar.sh) so JPype
+# starts with no external jars. The jar is a build artifact (gitignored); the
+# in-tree build backend refuses to build a wheel without it (unless
+# PULSE_ALLOW_NO_RUNTIME_JAR is set), so a release wheel cannot silently omit it.
+[tool.setuptools.package-data]
+"inventzia.pulse.beacon._runtime" = ["*.jar"]
+# Example input fixtures, so the documented examples run from an installed wheel
+# (accessed via importlib.resources, not a source-tree path).
+"inventzia.pulse.beacon.core.examples" = ["_data/*.jsonl"]

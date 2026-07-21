@@ -71,15 +71,17 @@ public final class RealTimeRunJepExample {
     // and also gives the JEP interpreters time to spin up before dispatch.
     private static final long LEAD_MS = 8_000L;
 
+    // The two packages' src/ roots for the interpreters' sys.path (public inventzia.pulse.*
+    // imports); redundant when the packages are pip-installed, but harmless.
     private static final Path REPO_ROOT =
             Paths.get(System.getProperty("pulse.repo.root", System.getProperty("user.dir")));
-    private static final String BEACON_ROOT = REPO_ROOT.resolve("pulse-beacon").toString();
-    private static final String DATA_ROOT   = REPO_ROOT.resolve("pulse-data").toString();
+    private static final String BEACON_ROOT = REPO_ROOT.resolve("pulse-beacon").resolve("src").toString();
+    private static final String DATA_ROOT   = REPO_ROOT.resolve("pulse-data").resolve("src").toString();
 
     private static final String RECORDING_PRINTER =
-            "core.python.inventzia.pulse.beacon.core.examples.recording_print_consumer.RecordingPrinter";
+            "inventzia.pulse.beacon.core.examples.recording_print_consumer.RecordingPrinter";
     private static final String ECHO_CONSUMER =
-            "core.python.inventzia.pulse.beacon.core.examples.echo_consumer.EchoConsumer";
+            "inventzia.pulse.beacon.core.examples.echo_consumer.EchoConsumer";
 
     private RealTimeRunJepExample() {
     }

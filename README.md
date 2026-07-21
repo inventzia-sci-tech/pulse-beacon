@@ -150,16 +150,20 @@ fixtures), stamped in the past so the historical runs are deterministic and fini
 data merges.
 
 **Python-host (cross-language) counterparts** live under
-`core/python/inventzia/pulse/beacon/core/examples/` and re-create the Java runs with Python
+`src/inventzia/pulse/beacon/core/examples/` and re-create the Java runs with Python
 components over the in-process JPype bridge: `historic_run_jpype.py` (the historical replay, with
 Python actors and a Python source gateway) and `realtime_run_jpype.py` (the real-time heartbeat run,
 which also shows the reverse direction: a Python echo actor publishing back to a Java sink gateway).
-Both need the Java module's jars staged in `core/java/jars/` and `PYTHONPATH="pulse-beacon:pulse-data"`
-(see [the cross-language spec](./docs/cross-language-python-inprocess.md)). The historical run's
+Both need the packages installed (`pip install -e ./pulse-data -e ./pulse-beacon`, no `PYTHONPATH`
+needed) and a Beacon classpath. `jpype_host` finds that classpath automatically: the wheel-bundled
+shaded **runtime jar** if present (build it with `./build-runtime-jar.sh`, which the wheel embeds so
+an installed `pip install pulse-beacon[jpype]` starts the JVM with no external jars), otherwise the
+Maven jars staged in `core/java/jars/` (see
+[the cross-language spec](./docs/cross-language-python-inprocess.md)). The historical run's
 parity is also asserted as a pytest:
 
 ```bash
-conda run -n pulse python -m pytest core/python/tests/test_historic_run_jpype.py
+conda run -n pulse python -m pytest tests/test_historic_run_jpype.py
 ```
 
 **Java-host (JEP) counterparts** run the *same* Python components with the JVM as host (the opposite
@@ -168,7 +172,7 @@ driven by `crosslanguage/JepLauncher.java` + the Python factory `crosslanguage/j
 a native setup (jar + `libjep`/`jep.dll` + libpython) — see
 [`core/java/.../crosslanguage/JEP_README.md`](./core/java/src/main/java/com/inventzia/pulse/beacon/core/crosslanguage/JEP_README.md).
 Run either with `core/java/run-jep-example.sh [ExampleName]`; the historical run's parity is a pytest
-(`core/python/tests/test_historic_run_jep.py`).
+(`tests/test_historic_run_jep.py`).
 
 ## Current status
 
@@ -205,7 +209,8 @@ build the Java and to back JPype) and the `jpype1` bridge:
 
 ```bash
 conda env create -f pulse-data/py_environment.yml      # creates `pulse` (base)
-conda env update -f pulse-beacon/core/python/py_environment.yml   # enriches it
+conda env update -f pulse-beacon/py_environment.yml     # enriches it
+pip install -e ./pulse-data -e ./pulse-beacon           # editable installs (public imports)
 ```
 
 The bundled JDK means `JAVA_HOME` is set automatically — no manual export. (Working only with

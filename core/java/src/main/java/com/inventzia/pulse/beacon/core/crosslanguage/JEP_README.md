@@ -31,7 +31,7 @@ Windows build are separate artifacts — you cannot share one across OSes.
 | Java | 17+ (build and run) |
 | Python runtime deps | **`pydantic`** only (everything else the components import is stdlib) |
 
-The `jep-4.3.1.jar` is plain Java bytecode and is **platform-independent** — the same
+The `jep-4.2.2.jar` is plain Java bytecode and is **platform-independent** — the same
 jar is used on both OSes; only the native lib differs (`libjep.so` vs `jep.dll`).
 
 ## The knobs, per platform
@@ -46,35 +46,32 @@ jar is used on both OSes; only the native lib differs (`libjep.so` vs `jep.dll`)
 | app arg | `-Dpulse.repo.root=<New>` | `-Dpulse.repo.root=C:\...\New` |
 
 `<New>` / `C:\...\New` is the directory that contains **both** `pulse-beacon` and
-`pulse-data` (their roots go on the interpreters' `sys.path`, repo-root-prefixed
-imports). On this project it is `/mnt/c/AlgoInfra/New` in WSL, i.e. `C:\AlgoInfra\New`
-on Windows.
+`pulse-data`; the launcher puts their `src/` roots on the interpreters' `sys.path`
+so the public `inventzia.pulse.*` packages resolve (redundant if the packages are
+pip-installed into the embedded interpreter's env — then no path is needed). On this
+project it is `/mnt/c/AlgoInfra/New` in WSL, i.e. `C:\AlgoInfra\New` on Windows.
 
 ---
 
 ## Linux (WSL) — the turnkey path
 
 The `pulse` conda env already carries a JDK + Maven; `jep` is in
-`pulse-beacon/core/python/py_environment.yml`.
+`pulse-beacon/py_environment.yml`.
 
 1. Ensure the env has jep (built at `conda env update`, or manually):
    ```bash
-   conda run -n pulse pip install "jep==4.3.1"
+   conda run -n pulse pip install "jep==4.2.2"
    ```
-2. Make the jar resolvable to Maven (one-time, into local `.m2`):
-   ```bash
-   conda run -n pulse mvn install:install-file \
-     -Dfile="$CONDA_PREFIX/lib/python3.11/site-packages/jep/jep-4.3.1.jar" \
-     -DgroupId=black.ninia -DartifactId=jep -Dversion=4.3.1 -Dpackaging=jar
-   ```
-3. Build the module, then run:
+   Maven resolves the compile-time `black.ninia:jep:4.2.2` from **Maven Central** — no
+   `install-file` needed. The runtime jep pinned above matches that version (see the pom).
+2. Build the module, then run:
    ```bash
    cd core/java
    conda run -n pulse ./run-jep-example.sh          # sets classpath + java.library.path + LD_LIBRARY_PATH
    ```
    Automated equivalent (from `pulse-beacon`):
    ```bash
-   conda run -n pulse python -m pytest core/python/tests/test_historic_run_jep.py
+   conda run -n pulse python -m pytest tests/test_historic_run_jep.py
    ```
 
 `run-jep-example.sh` derives the jep dir from `$CONDA_PREFIX`, so nothing is hard-coded.
@@ -95,17 +92,15 @@ The `pulse` conda env already carries a JDK + Maven; `jep` is in
 In that VS command prompt, with `JAVA_HOME` set:
 ```bat
 set JAVA_HOME=C:\path\to\jdk
-"%PYDIR%\python.exe" -m pip install "jep==4.3.1" pydantic
+"%PYDIR%\python.exe" -m pip install "jep==4.2.2" pydantic
 ```
-Artifacts: `%PYDIR%\Lib\site-packages\jep\` — holds `jep-4.3.1.jar` and `jep.dll`.
+Artifacts: `%PYDIR%\Lib\site-packages\jep\` — holds `jep-4.2.2.jar` and `jep.dll`.
 Call that folder `%JEPDIR%`.
 
-### 3. Let the IDE compile (Windows uses its own `.m2`)
-```bat
-mvn install:install-file -Dfile="%JEPDIR%\jep-4.3.1.jar" ^
-  -DgroupId=black.ninia -DartifactId=jep -Dversion=4.3.1 -Dpackaging=jar
-```
-Then Maven-update the project so `JepLauncher` / `HistoricRunJepExample` compile.
+### 3. Let the IDE compile
+Maven resolves `black.ninia:jep:4.2.2` from Maven Central — no `install-file` step. Just
+Maven-update the project so `JepLauncher` / `HistoricRunJepExample` compile. (The Central
+jar is compile-only; at runtime the native `%JEPDIR%\jep.dll` + `jep-4.2.2.jar` are used.)
 
 ### 4. Validate JEP alone first
 Create a throwaway `JepSmoke.java` to isolate the native wiring from the app:
@@ -132,9 +127,9 @@ Eclipse **Run → Run Configurations → Java Application**:
 - **VM arguments:**
   `-Djava.library.path="%JEPDIR%" -Dpulse.repo.root="C:\AlgoInfra\New"`
 - **Environment:** `PATH` = `%PYDIR%;%JEPDIR%;${env_var:PATH}`, `PYTHONHOME` = `%PYDIR%`
-- **Classpath:** the project's, plus the jep jar (from the Maven `provided` dep after
-  step 3; if the run classpath lacks it, *Classpath → User Entries → Add External JARs →*
-  `%JEPDIR%\jep-4.3.1.jar`).
+- **Classpath:** the project's, plus the jep jar (from the Maven `provided` dep — resolved
+  from Central; if the run classpath lacks it, *Classpath → User Entries → Add External JARs →*
+  `%JEPDIR%\jep-4.2.2.jar`).
 
 Expected: the interleaved engine + interpreter log, ending in `PARITY OK`.
 

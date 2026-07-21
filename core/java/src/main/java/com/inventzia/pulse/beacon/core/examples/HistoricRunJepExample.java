@@ -81,20 +81,24 @@ public final class HistoricRunJepExample {
             "heartbeat@1283630005500",
             "stream.one@1283630006000");
 
-    /** Repo roots for the interpreters' sys.path (repo-root-prefixed imports); handed to the launcher. */
+    /**
+     * The two packages' {@code src/} roots, prepended to each interpreter's sys.path so the
+     * public {@code inventzia.pulse.*} imports resolve from a source checkout. Redundant when
+     * the packages are pip-installed into the embedded interpreter's environment, but harmless.
+     */
     private static final Path REPO_ROOT =
             Paths.get(System.getProperty("pulse.repo.root", System.getProperty("user.dir")));
-    private static final String BEACON_ROOT = REPO_ROOT.resolve("pulse-beacon").toString();
-    private static final String DATA_ROOT   = REPO_ROOT.resolve("pulse-data").toString();
+    private static final String BEACON_ROOT = REPO_ROOT.resolve("pulse-beacon").resolve("src").toString();
+    private static final String DATA_ROOT   = REPO_ROOT.resolve("pulse-data").resolve("src").toString();
 
     // The Python component types this run wires up. The Java host names the type;
     // the JEP factory (jep_host) builds it.
     private static final String RECORDING_PRINTER =
-            "core.python.inventzia.pulse.beacon.core.examples.recording_print_consumer.RecordingPrinter";
+            "inventzia.pulse.beacon.core.examples.recording_print_consumer.RecordingPrinter";
     private static final String ECHO_CONSUMER =
-            "core.python.inventzia.pulse.beacon.core.examples.echo_consumer.EchoConsumer";
+            "inventzia.pulse.beacon.core.examples.echo_consumer.EchoConsumer";
     private static final String MESSAGE_FEED_GATEWAY =
-            "core.python.inventzia.pulse.beacon.core.examples.message_feed_gateway.MessageFeedGateway";
+            "inventzia.pulse.beacon.core.examples.message_feed_gateway.MessageFeedGateway";
 
     private HistoricRunJepExample() {
     }

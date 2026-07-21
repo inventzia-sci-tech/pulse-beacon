@@ -1,0 +1,8 @@
+# The in-tree build backend must be in the sdist, or the wheel-from-sdist step of
+# `python -m build` cannot find it ("Backend '_build_backend' is not available").
+include _build_backend.py
+
+# Build artifacts / package data the wheel needs, so a wheel built from the sdist is
+# a complete distribution (the runtime jar guard checks for the jar at wheel time).
+include src/inventzia/pulse/beacon/_runtime/*.jar
+recursive-include src/inventzia/pulse/beacon/core/examples/_data *.jsonl

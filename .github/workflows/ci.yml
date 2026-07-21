@@ -1,0 +1,164 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  # pulse-beacon depends on pulse-data (Java jar + Python). CI checks it out as a
+  # sibling; set CI_PAT in repo secrets if pulse-data is private (else GITHUB_TOKEN).
+  PULSE_DATA_REPO: inventzia-sci-tech/pulse-data
+  PULSE_DATA_REF: main
+
+jobs:
+  # Finding 4: pulse-beacon-core builds from a clean Maven env — jep resolves from
+  # Maven Central (no manual install-file), pulse-data from the local .m2.
+  maven:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: pulse-beacon
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PULSE_DATA_REPO }}
+          ref: ${{ env.PULSE_DATA_REF }}
+          path: pulse-data
+          token: ${{ secrets.CI_PAT || github.token }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Install pulse-data to local .m2
+        run: mvn -B -ntp -f pulse-data/pom.xml install -DskipTests
+      - name: Verify pulse-beacon-core (jep from Central)
+        run: mvn -B -ntp -f pulse-beacon/core/java/pom.xml verify
+
+  # Findings 1, 3, 5, 6: layout/imports, bundled runtime jar, regeneration drift,
+  # and version consistency — the whole distribution smoke test on built artifacts.
+  dist:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: pulse-beacon
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PULSE_DATA_REPO }}
+          ref: ${{ env.PULSE_DATA_REF }}
+          path: pulse-data
+          token: ${{ secrets.CI_PAT || github.token }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Tooling
+        run: python -m pip install --upgrade build
+
+      - name: Install pulse-data jar to local .m2 (needed by the runtime jar)
+        run: mvn -B -ntp -f pulse-data/pom.xml install -DskipTests
+
+      - name: Build the bundled runtime jar
+        working-directory: pulse-beacon
+        run: ./build-runtime-jar.sh
+
+      - name: Version consistency (dev mode)
+        working-directory: pulse-beacon
+        run: bash check-versions.sh
+
+      - name: Distribution smoke test
+        working-directory: pulse-beacon
+        run: bash dist-smoke-test.sh
+
+  # Finding 2: the cross-language integration tests run against the INSTALLED wheels
+  # (bundled jar via resolve_classpath) and FAIL rather than skip on a missing prereq.
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: pulse-beacon
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PULSE_DATA_REPO }}
+          ref: ${{ env.PULSE_DATA_REF }}
+          path: pulse-data
+          token: ${{ secrets.CI_PAT || github.token }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Build pulse-data jar + runtime jar
+        run: |
+          mvn -B -ntp -f pulse-data/pom.xml install -DskipTests
+          cd pulse-beacon && ./build-runtime-jar.sh
+
+      - name: Build release wheels (with bundled jar)
+        run: |
+          python -m pip install --upgrade build
+          python -m build --wheel -o "$GITHUB_WORKSPACE/wheels" pulse-data
+          python -m build --wheel -o "$GITHUB_WORKSPACE/wheels" pulse-beacon
+
+      - name: Install wheels + run JPype integration (strict, against the artifact)
+        run: |
+          python -m venv /tmp/iv
+          /tmp/iv/bin/pip install "$GITHUB_WORKSPACE"/wheels/pulse_data-*.whl \
+            "$GITHUB_WORKSPACE/wheels/pulse_beacon-0.1.0-py3-none-any.whl[jpype]" pytest
+          # JAVA_HOME comes from setup-java; PULSE_REQUIRE_INTEGRATION makes a missing
+          # prerequisite a failure, not a skip. (The JEP subprocess test needs a source
+          # Java build + native jep, so it is not part of this installed-artifact job.)
+          PULSE_REQUIRE_INTEGRATION=1 /tmp/iv/bin/python -m pytest -q \
+            "$GITHUB_WORKSPACE/pulse-beacon/tests/test_historic_run_jpype.py" \
+            "$GITHUB_WORKSPACE/pulse-beacon/tests/test_codec_cross_language_parity.py"
+
+  # Release: on a vX.Y.Z tag, build the wheels through the version gate (which rejects
+  # SNAPSHOT/mismatched versions) and upload them as artifacts. Publishing to PyPI /
+  # Maven Central is a separate, credentialed step (see PackagingAndPublishingRelease §5).
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [maven, dist, integration]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: pulse-beacon
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PULSE_DATA_REPO }}
+          ref: ${{ env.PULSE_DATA_REF }}
+          path: pulse-data
+          token: ${{ secrets.CI_PAT || github.token }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install pulse-data jar to local .m2
+        run: mvn -B -ntp -f pulse-data/pom.xml install -DskipTests
+      - name: Release build (version gate rejects SNAPSHOT/mismatch)
+        run: |
+          python -m pip install --upgrade build
+          cd pulse-beacon && bash release-build.sh "$GITHUB_WORKSPACE/dist"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-wheels
+          path: dist/*.whl
