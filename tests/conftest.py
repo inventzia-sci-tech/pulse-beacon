@@ -39,6 +39,11 @@ def pytest_configure(config):
         "integration: cross-language test needing a Beacon classpath + JVM "
         "(the JEP variant also needs a source-tree Java build)",
     )
+    config.addinivalue_line(
+        "markers",
+        "jep: needs a source-tree Java build (target/classes) + native jep; not "
+        "runnable against installed wheels. Deselect with -m 'not jep'.",
+    )
 
 
 def _missing_prereq(reason: str):

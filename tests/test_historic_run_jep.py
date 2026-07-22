@@ -33,7 +33,7 @@ _JAVA = _BEACON / "core" / "java"
 _CLASSES = _JAVA / "target" / "classes"
 _JARS = _JAVA / "jars"
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.jep]
 
 
 @pytest.fixture(scope="module")

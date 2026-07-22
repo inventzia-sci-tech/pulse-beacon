@@ -125,11 +125,11 @@ jobs:
           /tmp/iv/bin/pip install "$GITHUB_WORKSPACE"/wheels/pulse_data-*.whl \
             "${BEACON_WHEEL}[jpype]" pytest
           # JAVA_HOME comes from setup-java; PULSE_REQUIRE_INTEGRATION makes a missing
-          # prerequisite a failure, not a skip. (The JEP subprocess test needs a source
-          # Java build + native jep, so it is not part of this installed-artifact job.)
+          # prerequisite a failure, not a skip. Run the whole suite except the `jep`
+          # tests (which need a source-tree Java build + native jep) — marker selection
+          # so new installed-artifact tests are covered automatically, not a hand-listed set.
           PULSE_REQUIRE_INTEGRATION=1 /tmp/iv/bin/python -m pytest -q \
-            "$GITHUB_WORKSPACE/pulse-beacon/tests/test_historic_run_jpype.py" \
-            "$GITHUB_WORKSPACE/pulse-beacon/tests/test_codec_cross_language_parity.py"
+            "$GITHUB_WORKSPACE/pulse-beacon/tests" -m "not jep"
 
   # Release: on a vX.Y.Z tag, check out the same tag in both repositories, prove
   # that it matches both package versions, and record the resolved commit SHAs.
