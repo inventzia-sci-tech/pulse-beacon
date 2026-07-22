@@ -129,3 +129,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Commercial licensing description (`COMMERCIAL.md`).
 - Third-party attribution file (`NOTICE`).
 - GitHub Actions workflow enforcing DCO sign-off on pull requests.
+
+### Packaging & distribution
+
+- **Installable `src/` layout + `pyproject.toml`.** `core/python/inventzia` → `src/inventzia`,
+  tests → `tests/`; public `inventzia.pulse.*` imports throughout (dropped the repo-root-prefixed
+  imports and the conftest `sys.path` shim). PEP 420 namespace with deliberate exports, so
+  `from inventzia.pulse.beacon.core import BeaconActor` resolves. Pins `pulse-data==<version>` (the
+  runtime jar embeds Java pulse-data, so the installed Python pulse-data must match) and offers
+  opt-in `[jpype]` / `[jep]` extras.
+- **Bundled JPype runtime jar.** A shaded `pulse-beacon-core-runtime.jar` (Beacon + its Java
+  dependencies, with a generated `META-INF/THIRD-PARTY.txt` license inventory and an aggregated
+  `NOTICE`) is staged into the wheel; `jpype_host` finds it via `importlib.resources` (falling back
+  to the source-tree staged jars). `pip install pulse-beacon[jpype]` starts the JVM with no external
+  jars, `PYTHONPATH`, or Maven. An in-tree build backend (`_build_backend.py`) fails a wheel build
+  that would omit the jar.
+- **JEP resolves from Maven Central** (`black.ninia:jep:4.2.2`) — the manual `install-file` is gone;
+  the runtime jep is pinned to the same version.
+- **Example fixtures shipped as package data** (discovered via `importlib.resources`), so the
+  documented examples run from an installed wheel; the historic run no longer needs the source tree.
+- **Cross-language runs fail fast** on a dead producer (streamer `finish()` in a `finally` plus a
+  supervised join) instead of hanging the full timeout.
+- **Integration tests run against the installed artifact.** They resolve the Beacon classpath
+  (bundled jar or staged jars) and are marked `integration` / `jep`; a missing prerequisite skips
+  locally but *fails* under `PULSE_REQUIRE_INTEGRATION` (release CI must test, not skip).
+- **Release tooling**: `build-runtime-jar.sh`, `dist-smoke-test.sh`, `check-versions.sh` (dev/release
+  version gate), `release-build.sh`, and `RELEASING.md` (the tag ceremony). `pom.xml` gains release
+  metadata and source/javadoc jars.
+- **CI** (`.github/workflows/ci.yml`): `maven` (jep from Central), `dist` (runtime jar + distribution
+  smoke test), `integration` (installed-artifact tests, strict), and a tag-triggered `release` job.
+- **`VectorValue` end-to-end example + tests** (`vector_value_run_jpype`): a Python VectorValue
+  stream through the Java engine, plus cross-language codec parity, the parallel-length validator,
+  and immutability tests in both languages.
