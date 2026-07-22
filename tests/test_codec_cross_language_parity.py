@@ -97,3 +97,18 @@ def test_vector_value_parallel_length_enforced():
     JList = JClass("java.util.List")
     with pytest.raises(Exception):
         VV("X", 1, JList.of(BigDecimal("1"), BigDecimal("2")), JList.of("only-one"))
+
+
+@pytest.mark.parametrize("payload", ['{"beatKey":"B"}', '{"beatKey":"B","beatTime":null}'],
+                         ids=["missing", "null"])
+def test_java_codec_rejects_missing_or_null_required_field(payload):
+    """A missing/null required field is rejected on decode, not silently 0 (parity with Python).
+
+    A required primitive timestamp is the important case: without this it would
+    deserialize to time=0 in Java, breaking the bus's time-ordering guarantee.
+    """
+    codec = _java_codec()
+    envelope = ('{"typeId":"com.inventzia.pulse.data.schemas.platform.HeartBeat",'
+                f'"payload":{payload}}}')
+    with pytest.raises(Exception):
+        codec.fromTaggedJson(envelope)
