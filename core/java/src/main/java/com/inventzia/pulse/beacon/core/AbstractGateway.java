@@ -76,20 +76,28 @@ public abstract class AbstractGateway implements Gateway {
                       .add(key);
         }
 
-        synchronized void remove(Topic<?> topic, String key) {
+        /**
+         * Removes the {@code (topic, key)} entry only if it currently maps to
+         * {@code expected}. Returns {@code true} if an entry was removed. The
+         * identity check stops one gateway's unregister from tearing down another
+         * gateway's registration on the same {@code (topic, key)}.
+         */
+        synchronized boolean remove(Topic<?> topic, String key, Gateway expected) {
             Map<String, Gateway> keyMap = byTopicKey.get(topic);
-            if (keyMap == null) return;
-            Gateway gw = keyMap.remove(key);
+            if (keyMap == null) return false;
+            Gateway gw = keyMap.get(key);
+            if (gw == null || gw != expected) return false;
+            keyMap.remove(key);
             if (keyMap.isEmpty()) byTopicKey.remove(topic);
-            if (gw == null) return;
             Map<Topic<?>, Set<String>> topicMap = byGateway.get(gw);
-            if (topicMap == null) return;
+            if (topicMap == null) return true;
             Set<String> keys = topicMap.get(topic);
             if (keys != null) {
                 keys.remove(key);
                 if (keys.isEmpty()) topicMap.remove(topic);
             }
             if (topicMap.isEmpty()) byGateway.remove(gw);
+            return true;
         }
 
         synchronized Gateway get(Topic<?> topic, String key) {
@@ -234,19 +242,29 @@ public abstract class AbstractGateway implements Gateway {
      */
     @Override
     public synchronized void registerSubscriber(Gateway subscriber, Topic<?> topic, List<String> keys) {
+        List<String> freshKeys = new ArrayList<>();
         for (String key : keys) {
-            if (subscribers.get(topic, key) == subscriber) return; // circular guard
+            Gateway existing = subscribers.get(topic, key);
+            if (existing == subscriber) continue;             // already registered — idempotent / circular guard
+            if (existing != null) {                           // one-to-one: refuse a conflicting overwrite
+                throw new IllegalStateException(
+                        name() + ": " + topic.name() + " key=" + key + " already routes to subscriber '"
+                        + existing.name() + "'; cannot also route to '" + subscriber.name()
+                        + "' (subscriber routing is one-to-one)");
+            }
+            freshKeys.add(key);                               // only the not-yet-registered keys
         }
-        keys.forEach(key -> subscribers.add(topic, key, subscriber));
-        log.info("subscriber " + subscriber.name() + " registered on " + topic.name() + " keys=" + keys);
+        if (freshKeys.isEmpty()) return;
+        freshKeys.forEach(key -> subscribers.add(topic, key, subscriber));
+        log.info("subscriber " + subscriber.name() + " registered on " + topic.name() + " keys=" + freshKeys);
         if (subscriber != this) {
-            subscriber.registerPublisher(this, topic, keys);
+            subscriber.registerPublisher(this, topic, freshKeys);
         }
     }
 
     @Override
     public synchronized void unregisterSubscriber(Gateway subscriber, Topic<?> topic, List<String> keys) {
-        keys.forEach(key -> subscribers.remove(topic, key));
+        keys.forEach(key -> subscribers.remove(topic, key, subscriber));
         log.info("subscriber " + subscriber.name() + " unregistered from " + topic.name() + " keys=" + keys);
     }
 
@@ -261,19 +279,29 @@ public abstract class AbstractGateway implements Gateway {
      */
     @Override
     public synchronized void registerPublisher(Gateway publisher, Topic<?> topic, List<String> keys) {
+        List<String> freshKeys = new ArrayList<>();
         for (String key : keys) {
-            if (publishers.get(topic, key) == publisher) return; // circular guard
+            Gateway existing = publishers.get(topic, key);
+            if (existing == publisher) continue;              // already registered — idempotent / circular guard
+            if (existing != null) {                           // one-to-one: refuse a conflicting overwrite
+                throw new IllegalStateException(
+                        name() + ": " + topic.name() + " key=" + key + " already has publisher '"
+                        + existing.name() + "'; cannot also be published by '" + publisher.name()
+                        + "' (publisher routing is one-to-one)");
+            }
+            freshKeys.add(key);                               // only the not-yet-registered keys
         }
-        keys.forEach(key -> publishers.add(topic, key, publisher));
-        log.info("publisher " + publisher.name() + " registered on " + topic.name() + " keys=" + keys);
+        if (freshKeys.isEmpty()) return;
+        freshKeys.forEach(key -> publishers.add(topic, key, publisher));
+        log.info("publisher " + publisher.name() + " registered on " + topic.name() + " keys=" + freshKeys);
         if (publisher != this) {
-            publisher.registerSubscriber(this, topic, keys);
+            publisher.registerSubscriber(this, topic, freshKeys);
         }
     }
 
     @Override
     public synchronized void unregisterPublisher(Gateway publisher, Topic<?> topic, List<String> keys) {
-        keys.forEach(key -> publishers.remove(topic, key));
+        keys.forEach(key -> publishers.remove(topic, key, publisher));
         log.info("publisher " + publisher.name() + " unregistered from " + topic.name() + " keys=" + keys);
         if (autodisconnectWhenNoMorePublishers && publishers.isEmpty()) {
             disconnect();

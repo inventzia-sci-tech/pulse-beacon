@@ -19,7 +19,6 @@ import com.inventzia.pulse.data.datum.Datum;
 import com.inventzia.pulse.data.datum.DatumCodec;
 
 import java.io.BufferedReader;
-import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -115,13 +114,19 @@ public final class JsonlReaderGateway<P extends Datum> extends AbstractGateway {
                     downstream.onEvent(topic, payload);
                 }
             }
-        } catch (IOException e) {
-            throw new JsonlGatewayException(
-                    "I/O error reading " + filePath, e);
+        } catch (Exception e) {
+            // An I/O error or a malformed line (parse failure) must not leave this
+            // thread dead while still registered as a clock driver — the TimeMachine's
+            // all-drivers barrier would then wait on it forever, hanging the whole run.
+            // Log the failure and fall through to disconnect(), which unregisters the
+            // gateway and releases the barrier, so the engine fails fast rather than
+            // hanging, with this gateway named in the log.
+            log.severe("gateway '" + name() + "' failed reading " + filePath
+                    + "; disconnecting so the run can terminate", e);
+        } finally {
+            disconnect();
+            setStatus(GatewayStatus.STOPPED);
         }
-
-        disconnect();
-        setStatus(GatewayStatus.STOPPED);
     }
 
     // ------------------------------------------------------------------

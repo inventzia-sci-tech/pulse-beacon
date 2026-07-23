@@ -202,6 +202,13 @@ all-Java event-time merge). The ZMQ out-of-process socket transport remains plan
 | Cross-language parity tests | JPype runs in strict installed-artifact CI; JEP has a local parity test requiring native setup | 🟡 partial |
 | Socket transport | ZMQ gateways | ⏳ planned |
 
+**Beta limitations.** `COMPRESSED_TIME` (deterministic replay) is the fully hardened path;
+`REAL_TIME` is demo-grade — in particular its live event queue is **unbounded** (no backpressure),
+so a live source that outpaces dispatch grows memory without limit. The intermediate `MIXED`
+(replay-then-live) mode is not yet implemented. The Java-host **JEP** bridge is experimental (see
+the status table). These are documented targets for a post-beta hardening pass, not blockers for the
+in-process, compressed-time use the beta is scoped to.
+
 ## Requirements
 
 Everything runs from one shared conda env, `pulse`. It is layered: pulse-data declares the minimal

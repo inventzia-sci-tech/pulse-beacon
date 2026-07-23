@@ -25,6 +25,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.TimeUnit;
 
 /**
  * The Java half of a gateway (external boundary) implemented in another
@@ -71,6 +72,13 @@ public final class CrossLanguageGateway extends AbstractGateway {
     // -- SOURCE: foreign language → engine, permit-paced --
     private final SynchronousQueue<CrossLanguageEvent> outbound = new SynchronousQueue<>();
     private final Semaphore accepted = new Semaphore(0);
+    /**
+     * Set true when the source loop ends (normally or on failure). A foreign producer
+     * parked in {@link #offerNext} then unblocks and fails fast instead of waiting for
+     * a consumer that will never take again — the source-side mirror of the fail-fast
+     * contract on the consumer side.
+     */
+    private volatile boolean sourceClosed = false;
 
     // -- SINK: engine → foreign language (same handshake as CrossLanguageActor) --
     // Unbounded so END can be enqueued without a consumer present (abort path must
@@ -112,8 +120,20 @@ public final class CrossLanguageGateway extends AbstractGateway {
      */
     public void offerNext(String topicName, String taggedJson) {
         try {
-            outbound.put(CrossLanguageEvent.data(topicName, taggedJson));
-            accepted.acquire();
+            CrossLanguageEvent event = CrossLanguageEvent.data(topicName, taggedJson);
+            // Offer with a poll rather than an unbounded put, so a source loop that has
+            // ended (normally or after a failure — see sourceClosed) unblocks the foreign
+            // producer instead of parking it forever on a rendezvous no one will complete.
+            // With a live consumer the handoff still completes immediately (offer returns
+            // as soon as runSource's take() accepts it), so determinism is unchanged.
+            while (!sourceClosed) {
+                if (outbound.offer(event, 100, TimeUnit.MILLISECONDS)) {
+                    accepted.acquire();
+                    return;
+                }
+            }
+            throw new CrossLanguageException(
+                    name() + " source is closed; cannot offer further events");
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new CrossLanguageException(name() + " interrupted offering an event", e);
@@ -142,35 +162,50 @@ public final class CrossLanguageGateway extends AbstractGateway {
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            // A source failure (malformed tagged JSON from the foreign side, an
+            // unregistered topic name) must not leave this thread dead while still a
+            // registered clock driver — the TimeMachine barrier would hang the run. Log
+            // and fall through to disconnect(), which releases the barrier so the engine
+            // terminates promptly with this gateway named.
+            log.severe("cross-language gateway '" + name() + "' source failed; disconnecting", e);
+        } finally {
+            disconnect();
+            setStatus(GatewayStatus.STOPPED);
         }
-        disconnect();
-        setStatus(GatewayStatus.STOPPED);
     }
 
     private void runSource() throws InterruptedException {
-        while (connected()) {
-            CrossLanguageEvent event = outbound.take();
-            if (event.kind() == CrossLanguageEvent.Kind.END) {
-                break;
-            }
-            try {
-                Datum datum = DatumCodec.instance().fromTaggedJson(event.taggedJson());
-                Topic<?> topic = topics.get(event.topicName());
-                if (topic == null) {
-                    throw new CrossLanguageException(
-                            name() + ": no registered topic '" + event.topicName() + "'");
+        try {
+            while (connected()) {
+                CrossLanguageEvent event = outbound.take();
+                if (event.kind() == CrossLanguageEvent.Kind.END) {
+                    break;
                 }
-                // D4: routing key comes from the datum itself (single source of truth).
-                Gateway downstream = subscriberForKey(topic, datum.getDatumKey());
-                if (downstream != null) {
-                    // Blocks on the time-machine write permit until the prior event is consumed.
-                    deliver(downstream, topic, datum);
-                } else {
-                    log.warn("no subscriber for " + topic.name() + " key=" + datum.getDatumKey());
+                try {
+                    Datum datum = DatumCodec.instance().fromTaggedJson(event.taggedJson());
+                    Topic<?> topic = topics.get(event.topicName());
+                    if (topic == null) {
+                        throw new CrossLanguageException(
+                                name() + ": no registered topic '" + event.topicName() + "'");
+                    }
+                    // D4: routing key comes from the datum itself (single source of truth).
+                    Gateway downstream = subscriberForKey(topic, datum.getDatumKey());
+                    if (downstream != null) {
+                        // Blocks on the time-machine write permit until the prior event is consumed.
+                        deliver(downstream, topic, datum);
+                    } else {
+                        log.warn("no subscriber for " + topic.name() + " key=" + datum.getDatumKey());
+                    }
+                } finally {
+                    accepted.release(); // let the foreign side produce the next, even on error
                 }
-            } finally {
-                accepted.release(); // let the foreign side produce the next, even on error
             }
+        } finally {
+            // The loop has ended (END, disconnect, or a failure propagating out): mark the
+            // source closed so a foreign producer parked in offerNext bails instead of
+            // blocking forever on a rendezvous no one will complete.
+            sourceClosed = true;
         }
     }
 

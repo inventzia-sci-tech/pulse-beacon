@@ -83,7 +83,16 @@ public abstract class AbstractEngine extends AbstractGateway {
 
     private final TimeMachine timeMachine;
 
-    /** Used in REAL_TIME mode instead of the TimeMachine. */
+    /**
+     * Used in REAL_TIME mode instead of the TimeMachine.
+     *
+     * <p><b>Beta limitation — no backpressure.</b> This queue is unbounded: a live
+     * producer that outpaces the dispatch thread grows it without limit. Acceptable for
+     * the current demo-grade real-time support (COMPRESSED_TIME, the deterministic replay
+     * path, is permit-paced and bounded by the number of gateways). A future real-time
+     * hardening pass should choose a policy — bounded + block, or drop-oldest with a
+     * dropped-event counter.
+     */
     private final LinkedBlockingQueue<TimeEvent> liveQueue = new LinkedBlockingQueue<>();
 
     private volatile long     lastEventTime = -1L;
