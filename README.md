@@ -5,6 +5,30 @@ producers and consumers. It provides the infrastructure layer (engine, time mach
 actor base classes) with no domain-specific vocabulary in its core. Algo-trading strategies, IoT
 pipelines, or any other application domain sit on top of it.
 
+## Mission
+
+pulse-beacon exists to make an event-driven system's behaviour **trustworthy enough to research on
+and safe enough to run in production, with the same code and the same guarantees in both.** Four
+principles drive every design decision:
+
+- **Determinism.** How data travels the platform (inputs, derived system state, and client state)
+  is reproducible, driven by the precise event-time of each event rather than by wall-clock arrival
+  or thread scheduling. The same inputs always produce the same run.
+- **Reproducibility.** A research finding must be traceable to the exact data, parameters, code, and
+  strategy versions that produced it. A result you cannot regenerate is not a result.
+- **Auditability.** Important decisions and lifecycle events leave durable evidence, enough to
+  rebuild what each component saw and what it decided. Every event is typed, timestamped, and
+  travels a single ordered path; components log their lifecycle and decisions, and any stream can be
+  recorded through a sink gateway.
+- **Production parity.** Research and simulation must faithfully represent the live system. Moving
+  from a historical replay to a live run swaps gateways, not the actors, so what you validated is
+  what you deploy.
+
+**The solution:** one **engine** with a **time machine** underneath that merges every source into a
+single, event-time-ordered stream; **gateways** that connect external sources and sinks of data at
+the boundary; and **actors** that consume data and produce new derived data for other actors to
+consume. Determinism is a property of the engine, not a discipline demanded of the components on top.
+
 ## What it does
 
 pulse-beacon organises an event-driven run into three hierarchical layers:
@@ -169,7 +193,7 @@ conda run -n pulse python -m pytest tests/test_historic_run_jpype.py
 **Experimental Java-host (JEP) counterparts** run the *same* Python components with the JVM as host (the opposite
 embedding direction): `examples/HistoricRunJepExample.java` and `examples/RealTimeRunJepExample.java`,
 driven by `crosslanguage/JepLauncher.java` + the Python factory `crosslanguage/jep_host.py`. JEP needs
-a native setup (jar + `libjep`/`jep.dll` + libpython) — see
+a native setup (jar + `libjep`/`jep.dll` + libpython); see
 [`core/java/.../crosslanguage/JEP_README.md`](./core/java/src/main/java/com/inventzia/pulse/beacon/core/crosslanguage/JEP_README.md).
 Run either with `core/java/run-jep-example.sh [ExampleName]`; the historical run's parity is a pytest
 (`tests/test_historic_run_jep.py`). JEP is not part of release CI yet, so the beta supports JPype as
@@ -203,7 +227,7 @@ all-Java event-time merge). The ZMQ out-of-process socket transport remains plan
 | Socket transport | ZMQ gateways | ⏳ planned |
 
 **Beta limitations.** `COMPRESSED_TIME` (deterministic replay) is the fully hardened path;
-`REAL_TIME` is demo-grade — in particular its live event queue is **unbounded** (no backpressure),
+`REAL_TIME` is demo-grade; in particular its live event queue is **unbounded** (no backpressure),
 so a live source that outpaces dispatch grows memory without limit. The intermediate `MIXED`
 (replay-then-live) mode is not yet implemented. The Java-host **JEP** bridge is experimental (see
 the status table). These are documented targets for a post-beta hardening pass, not blockers for the
@@ -221,7 +245,7 @@ conda env update -f pulse-beacon/py_environment.yml     # enriches it
 pip install -e ./pulse-data -e ./pulse-beacon           # editable installs (public imports)
 ```
 
-The bundled JDK means `JAVA_HOME` is set automatically — no manual export. (Working only with
+The bundled JDK means `JAVA_HOME` is set automatically, so no manual export is needed. (Working only with
 pulse-data? The base env alone is enough.)
 
 ## Licensing
