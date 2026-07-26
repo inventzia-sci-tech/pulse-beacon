@@ -407,7 +407,32 @@ public abstract class AbstractGateway implements Gateway {
         log.info("status " + previous + " → " + newStatus);
     }
 
-    /** @return the operating mode determined during {@link #initialize()}. */
+    /**
+     * The operating mode determined during {@link #initialize()}.
+     *
+     * <p><b>Deliberately {@code protected}, and deliberately not on any public
+     * interface or reachable by actors.</b> A {@link Gateway} <em>may</em> adapt to
+     * the mode — a broker gateway must refuse to hit the live API during a replay, a
+     * gateway may batch I/O in compressed time and flush eagerly in real time. That is
+     * adapting the <em>plumbing</em> at the system boundary, which is legitimate.
+     *
+     * <p>An {@code Actor} (a strategy) must <em>never</em> see the mode. Production
+     * parity — "what you validated is what you deploy" — requires that a strategy
+     * cannot tell whether it is being simulated or run live: the moment it can branch
+     * on that, your backtest validates one code path and you ship another, and it
+     * opens the door to overfitting-to-simulation and look-ahead shortcuts that only
+     * "work" because the code knows it is not real. So mode is absent from the
+     * {@code Actor} contract by construction: parity is a property of the framework,
+     * not a discipline asked of every strategy author.
+     *
+     * <p>Observers that legitimately need the mode (logging, telemetry, run manifests,
+     * mode-selection tests) should read it from {@link AbstractEngine#runInfo()}, the
+     * public read-only surface — <em>not</em> reach into this method from a
+     * same-package class. Doing the latter from actor code deliberately subverts the
+     * parity boundary described above.
+     *
+     * @return the operating mode determined during {@link #initialize()}
+     */
     protected OperatingMode operatingMode() { return operatingMode; }
 
     protected long startTime() { return startTime; }

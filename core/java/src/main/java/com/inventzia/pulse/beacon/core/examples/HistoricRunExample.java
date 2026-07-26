@@ -14,6 +14,7 @@ package com.inventzia.pulse.beacon.core.examples;
 import com.inventzia.pulse.beacon.core.ComponentReporter;
 import com.inventzia.pulse.beacon.core.GatewayStatus;
 import com.inventzia.pulse.beacon.core.MultiClientEngine;
+import com.inventzia.pulse.beacon.core.RunInfo;
 import com.inventzia.pulse.beacon.core.Slf4jReporter;
 import com.inventzia.pulse.beacon.core.Topic;
 import com.inventzia.pulse.beacon.core.gateway.file.JsonlReaderGateway;
@@ -113,6 +114,11 @@ public final class HistoricRunExample {
         t4.start();
 
         engineThread.join(10_000);
-        LOG.info("finished — engine status: " + engine.status());
+        // The run orchestrator (this code) can record what the run did via the public
+        // observer API. Actors never see this — a strategy cannot tell replay from live.
+        RunInfo info = engine.runInfo();
+        LOG.info("finished: mode=" + info.mode()
+                + " window=[" + info.startTime() + ".." + info.endTime() + "]"
+                + ", engine status: " + engine.status());
     }
 }

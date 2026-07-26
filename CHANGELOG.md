@@ -12,6 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 First public beta. Initial packaging/distribution release of the engine core and
 in-process cross-language bridge.
 
+### Added (run observer)
+
+- `RunInfo(OperatingMode mode, long startTime, long endTime)` + public
+  `AbstractEngine.runInfo()` — the sanctioned, read-only way for a run orchestrator to
+  record a run's mode and window (logging, telemetry, run manifests, mode-selection
+  tests) without reaching into the protected `operatingMode()` accessor. Actors hold
+  only a `Pub`, so a strategy still cannot obtain the mode and branch on it (production
+  parity). `operatingMode()` stays `protected` for gateways that legitimately adapt to
+  the mode (e.g. a broker gateway refusing to trade during a replay); its javadoc now
+  states the parity rationale explicitly.
+
 ### Added (logging)
 
 - **SLF4J + Logback logging**, wrapped behind the proprietary `Reporter` abstraction. The

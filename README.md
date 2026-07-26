@@ -51,6 +51,13 @@ Key properties:
   events merge in exact event-time order; in real time the same actors run against a live queue.
   Moving from a historical simulation replay to a live run means swapping gateways, not rewriting
   actors, so the run is identical by construction.
+- **Strategies are blind to run mode.** An actor cannot ask whether it is running live or as a
+  replay; the operating mode is not on the actor contract. That is what makes replay/live parity a
+  property of the framework rather than a rule each strategy must remember to follow: a strategy that
+  could branch on the mode would no longer be validated by its own backtest, and could quietly
+  overfit to simulation. Observers that legitimately need the mode (logging, telemetry, tests) read
+  it from the engine's public `runInfo()`. Gateways at the system boundary may adapt to it (a broker
+  gateway refuses to trade during a replay); actors may not.
 - **Event-time ordering.** Events are merged and dispatched by their *logical* event time
   (`Datum.getDatumTime()`), not by arrival order. Each `TimeEvent` also records processing
   timestamps (when it entered and left the machine) for latency measurement and diagnostics.

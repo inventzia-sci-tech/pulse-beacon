@@ -124,6 +124,29 @@ public abstract class AbstractEngine extends AbstractGateway {
     }
 
     // ------------------------------------------------------------------
+    // Observer API — read-only run description (for orchestrators, not actors)
+    // ------------------------------------------------------------------
+
+    /**
+     * The run's {@link RunInfo}: its {@link OperatingMode} and time window. This is
+     * the sanctioned, public way for the code orchestrating a run to record or report
+     * what it did (run manifests, telemetry, audit records, mode-selection tests)
+     * without reaching into the protected {@link #operatingMode()} accessor.
+     *
+     * <p>Before {@link #initialize()} the mode is {@link OperatingMode#UNDEFINED};
+     * after it, {@link OperatingMode#REAL_TIME} or {@link OperatingMode#COMPRESSED_TIME}.
+     *
+     * <p>Only the run orchestrator (which holds the engine) can call this. Actors hold
+     * only a {@link Pub}, so a strategy cannot obtain the mode and branch on it — see
+     * {@link AbstractGateway#operatingMode()} for why that boundary matters.
+     *
+     * @return an immutable snapshot of the run's mode and window
+     */
+    public RunInfo runInfo() {
+        return new RunInfo(operatingMode(), startTime(), endTime());
+    }
+
+    // ------------------------------------------------------------------
     // Gateway — receive events from registered publisher gateways
     // ------------------------------------------------------------------
 
