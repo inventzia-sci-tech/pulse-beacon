@@ -7,11 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.0b1] - 2026-07-23
-
-First public beta. Initial packaging/distribution release of the engine core and
-in-process cross-language bridge.
-
 ### Added (run observer)
 
 - `RunInfo(OperatingMode mode, long startTime, long endTime)` + public
