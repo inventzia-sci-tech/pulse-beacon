@@ -18,7 +18,7 @@ import pytest
 
 from inventzia.pulse.data.datum.codec import to_tagged_json
 from inventzia.pulse.data.schemas.platform.heart_beat import HeartBeat
-from inventzia.pulse.data.schemas.registry import type_id_of
+from inventzia.pulse.data.datum.registry import type_id_of
 
 
 def test_registered_datum_encodes():
