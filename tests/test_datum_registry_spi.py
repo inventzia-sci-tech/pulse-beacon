@@ -73,3 +73,30 @@ def test_duplicate_type_id_across_providers_is_rejected():
     p2 = _provider(provider_id="com.inventzia.pulse.data.schemas")
     with pytest.raises(ValueError):
         build_registry([p1, p2])
+
+
+# --- Phase 2: manifest retention, validation, fingerprint ------------------------------
+
+def test_fingerprint_none_and_provider_unverifiable_when_manifest_absent():
+    reg = build_registry([_provider(manifest=None)])
+    assert reg.fingerprint() is None
+    assert reg.unverifiable_providers() == (_CORE_NS,)
+    assert reg.providers()[0].package_version == "1.0"
+
+
+def test_malformed_manifest_is_rejected():
+    with pytest.raises(ValueError):
+        build_registry([_provider(manifest="not-a-pdm1-manifest")])
+
+
+def test_manifest_disagreeing_with_bindings_is_rejected():
+    # Manifest declares a type the provider does not bind (one-to-one violated).
+    bad = f"pdm1|{_CORE_NS}|{_CORE_NS}.Other:1:{'0' * 64}"
+    with pytest.raises(ValueError):
+        build_registry([_provider(manifest=bad)])
+
+
+def test_manifest_with_non_hex_fingerprint_is_rejected():
+    bad = f"pdm1|{_CORE_NS}|{HeartBeat.TYPE_ID}:{HeartBeat.TYPE_VERSION}:not-hex"
+    with pytest.raises(ValueError):
+        build_registry([_provider(manifest=bad)])
