@@ -57,6 +57,9 @@ class RunInfoTest {
         assertThat(info.endTime()).isEqualTo(END);
         // A running engine only ever selects one of the two live modes.
         assertThat(info.mode()).isIn(OperatingMode.COMPRESSED_TIME, OperatingMode.REAL_TIME);
+        // Audit: the run records the datum-type universe it ran against.
+        assertThat(info.typeFingerprint()).as("composite fingerprint").isNotNull().hasSize(64);
+        assertThat(info.providerIds()).contains("com.inventzia.pulse.data");
     }
 
     /** Minimal actor so the engine has a consumer to dispatch to. */

@@ -95,7 +95,15 @@ def resolve_classpath(jars_dir=None) -> tuple[list[str], str]:
         f"cp target/pulse-beacon-core-*.jar jars/)")
 
 
-def start_jvm(jars_dir=None) -> None:
+class TypeUniverseMismatch(RuntimeError):
+    """The Python and Java datum-type universes disagree; the bridge must not run.
+
+    Raised before any event flows, so a producer cannot emit an extension datum the
+    receiving runtime cannot decode (the SPI Phase 3 fail-fast gate).
+    """
+
+
+def start_jvm(jars_dir=None, verify=True) -> None:
     """Start the embedded JVM on the Beacon classpath, if not already running.
 
     Classpath resolution order: explicit ``jars_dir`` → wheel-bundled runtime jar →
@@ -103,6 +111,10 @@ def start_jvm(jars_dir=None) -> None:
     ``JAVA_HOME``; in the shared ``pulse`` conda env that is set automatically by the
     bundled OpenJDK, so no manual export is needed; outside it, point ``JAVA_HOME`` at
     any JDK 17+. Idempotent.
+
+    If ``verify`` (default), the Python and Java datum-type universes are compared once
+    the JVM is up, before any event flows, and a mismatch raises
+    :class:`TypeUniverseMismatch` (see :func:`verify_type_universe`).
     """
     import jpype
 
@@ -122,3 +134,62 @@ def start_jvm(jars_dir=None) -> None:
     # back as native Python str, so json.loads / str ops work without wrapping.
     jpype.startJVM(classpath=jars, convertStrings=True)
     _log.info(f"JVM started ({source})")
+    if verify:
+        verify_type_universe()
+
+
+def _java_registry():
+    from jpype import JClass
+    return JClass("com.inventzia.pulse.data.datum.DatumTypeRegistry").defaultRegistry()
+
+
+def _py_type_map(registry) -> dict:
+    return {tid: (ver, fp) for pi in registry.providers() for (tid, ver, fp) in pi.entries}
+
+
+def _java_type_map(registry) -> dict:
+    return {str(e.typeId()): (int(e.typeVersion()), str(e.fingerprint()))
+            for pi in registry.providers() for e in pi.entries()}
+
+
+def verify_type_universe(py_registry=None, java_registry=None) -> str:
+    """Compare the Python and Java composite datum-type fingerprints; fail fast on mismatch.
+
+    Returns the shared fingerprint on success. Raises :class:`TypeUniverseMismatch` if the
+    two differ (naming the missing or incompatible types), or if either side is unverifiable
+    (a provider without a manifest), which is treated as fail-closed. Defaults to each
+    runtime's process-wide registry; explicit registries are accepted for testing.
+    """
+    from inventzia.pulse.data.datum.registry import default_registry
+
+    py_reg = py_registry if py_registry is not None else default_registry()
+    java_reg = java_registry if java_registry is not None else _java_registry()
+
+    py_fp = py_reg.fingerprint()
+    jfp = java_reg.fingerprint()
+    java_fp = str(jfp) if jfp is not None else None
+
+    if py_fp is None or java_fp is None:
+        py_unv = list(py_reg.unverifiable_providers())
+        java_unv = [str(x) for x in java_reg.unverifiableProviders()]
+        raise TypeUniverseMismatch(
+            "datum-type universe is unverifiable (a provider has no manifest): "
+            f"python unverifiable={py_unv}, java unverifiable={java_unv}")
+
+    if py_fp != java_fp:
+        pym, jvm = _py_type_map(py_reg), _java_type_map(java_reg)
+        diffs = []
+        for tid in sorted(set(pym) | set(jvm)):
+            p, j = pym.get(tid), jvm.get(tid)
+            if p is None:
+                diffs.append(f"  {tid}: only in Java")
+            elif j is None:
+                diffs.append(f"  {tid}: only in Python")
+            elif p != j:
+                diffs.append(f"  {tid}: differs (python v{p[0]}/{p[1][:8]}, java v{j[0]}/{j[1][:8]})")
+        raise TypeUniverseMismatch(
+            f"cross-language datum-type universe mismatch (python={py_fp[:12]}, java={java_fp[:12]}):\n"
+            + "\n".join(diffs))
+
+    _log.large_info(lambda: f"type universe verified: {py_fp[:12]}")
+    return py_fp

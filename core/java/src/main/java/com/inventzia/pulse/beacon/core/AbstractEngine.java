@@ -143,7 +143,13 @@ public abstract class AbstractEngine extends AbstractGateway {
      * @return an immutable snapshot of the run's mode and window
      */
     public RunInfo runInfo() {
-        return new RunInfo(operatingMode(), startTime(), endTime());
+        var registry = com.inventzia.pulse.data.datum.DatumTypeRegistry.defaultRegistry();
+        List<String> providerIds = registry.providers().stream()
+                .map(com.inventzia.pulse.data.datum.DatumTypeRegistry.ProviderInfo::providerId)
+                .sorted()
+                .toList();
+        return new RunInfo(operatingMode(), startTime(), endTime(),
+                registry.fingerprint(), providerIds);
     }
 
     // ------------------------------------------------------------------

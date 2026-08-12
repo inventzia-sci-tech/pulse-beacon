@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (cross-language type-universe gate, SPI Phase 3)
+
+- **The JPype bridge fails fast on a datum-type mismatch.** `start_jvm()` now verifies, once
+  the JVM is up and before any event flows, that the Python and Java composite datum-type
+  fingerprints agree (`verify_type_universe()`); a mismatch raises `TypeUniverseMismatch` with a
+  per-type diff (which types are only on one side or differ), and an unverifiable side (a
+  provider without a manifest) is fail-closed. So a producer cannot emit an extension datum the
+  receiving runtime cannot decode. Opt out with `start_jvm(verify=False)`.
+- **`RunInfo` records the datum-type universe.** `RunInfo` gains `typeFingerprint` and
+  `providerIds`, so a run is traceable to the exact set of types it could route (auditability /
+  reproducibility). `AbstractEngine.runInfo()` populates them from the composite registry.
+
 ### Added (run observer)
 
 - `RunInfo(OperatingMode mode, long startTime, long endTime)` + public

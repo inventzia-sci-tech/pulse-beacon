@@ -119,6 +119,8 @@ public final class HistoricRunExample {
         RunInfo info = engine.runInfo();
         LOG.info("finished: mode=" + info.mode()
                 + " window=[" + info.startTime() + ".." + info.endTime() + "]"
+                + " typeFingerprint=" + info.typeFingerprint()
+                + " providers=" + info.providerIds()
                 + ", engine status: " + engine.status());
     }
 }
