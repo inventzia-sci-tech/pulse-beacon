@@ -51,13 +51,14 @@ Key properties:
   events merge in exact event-time order; in real time the same actors run against a live queue.
   Moving from a historical simulation replay to a live run means swapping gateways, not rewriting
   actors, so the run is identical by construction.
-- **Strategies are blind to run mode.** An actor cannot ask whether it is running live or as a
+- **Actors are blind to run mode.** An actor cannot ask whether it is running live or as a
   replay; the operating mode is not on the actor contract. That is what makes replay/live parity a
-  property of the framework rather than a rule each strategy must remember to follow: a strategy that
-  could branch on the mode would no longer be validated by its own backtest, and could quietly
+  property of the framework rather than a rule each actor must remember to follow: a strategy that
+  could branch on the mode would no longer be validated by its own simulation, and could quietly
   overfit to simulation. Observers that legitimately need the mode (logging, telemetry, tests) read
-  it from the engine's public `runInfo()`. Gateways at the system boundary may adapt to it (a broker
-  gateway refuses to trade during a replay); actors may not.
+  it from the engine's public `runInfo()`, which also reports the run's datum-type universe (a
+  fingerprint plus the active provider ids) for reproducibility and audit. Gateways at the system
+  boundary may adapt to the mode (a realtime only gateway refuses to operate during a replay); actors may not.
 - **Event-time ordering.** Events are merged and dispatched by their *logical* event time
   (`Datum.getDatumTime()`), not by arrival order. Each `TimeEvent` also records processing
   timestamps (when it entered and left the machine) for latency measurement and diagnostics.
@@ -66,8 +67,14 @@ Key properties:
   are dispatched in a deterministic order (high-priority first, then registration order), so a replay
   reproduces itself exactly.
 - **Typed events.** Event schemas are defined in YAML in
-  [pulse-data](https://github.com/inventzia-sci-tech/pulse-data) and code-generated for both Java
-  and Python. Actors are written against concrete generated types, not untyped maps or CSV strings.
+  [pulse-data](https://github.com/inventzia-sci-tech/pulse-data) and code-generated into concrete
+  classes for both Java and Python, so actors are written against real types, not untyped maps or
+  CSV strings. The type set is open: through the `DatumTypeProvider` **SPI** (Service Provider
+  Interface, a small contract a package implements and registers inside its own jar) an independent
+  package can contribute its own datum types, which both runtimes discover at startup with no change
+  to pulse-data or pulse-beacon. For the full description see "Adding a new data type" in the
+  [pulse-data README](https://github.com/inventzia-sci-tech/pulse-data#adding-a-new-data-type), and
+  the runnable [`pulse-ext-example`](./examples/pulse-ext-example/) for a worked end-to-end example.
 - **Fault isolation in dispatch.** A throwing actor is caught, logged with its stack trace, and
   skipped: the run continues and the other actors on that event are unaffected (a buggy strategy
   cannot abort a replay). A failing *subscriber/sink gateway* is treated as a broken boundary and is
@@ -107,14 +114,16 @@ distributed deployment. Both sit behind one Python programming model, described 
 ```
 pulse-beacon/
 ├── core/
-│   ├── java/     ← Maven module `pulse-beacon-core`
-│   │   └── …/beacon/core/
-│   │        ├── (bus contracts, engine, time machine, base classes)
-│   │        ├── gateway/{file,periodic}/  ← JsonlReader/Writer, HeartBeat
-│   │        ├── crosslanguage/            ← CrossLanguageActor/Gateway/Event (Java half of the bridge)
-│   │        └── examples/                 ← runnable examples (see below)
-│   └── python/   ← `inventzia.pulse.beacon.core`: Python actor/gateway bases,
-│                   channel, dispatch, Reporter logging facade, CrossLanguageStreamer
+│   └── java/     ← Maven module `pulse-beacon-core`
+│       └── …/beacon/core/
+│            ├── (bus contracts, engine, time machine, base classes)
+│            ├── gateway/{file,periodic}/  ← JsonlReader/Writer, HeartBeat
+│            ├── crosslanguage/            ← CrossLanguageActor/Gateway/Event (Java half of the bridge)
+│            └── examples/                 ← runnable Java examples (see below)
+├── src/         ← `inventzia.pulse.beacon.*` (Python): actor/gateway bases, channel,
+│                   dispatch, Reporter logging facade, CrossLanguageStreamer, and core examples
+├── examples/    ← standalone extension example package (pulse-ext-example)
+├── tests/       ← Python test suite
 └── docs/         ← design specs (e.g. the cross-language in-process spec)
 ```
 
@@ -137,8 +146,9 @@ Every generated type implements the two-method routing contract `Datum` (`getDat
   example a topic's payload type, as in the JSONL gateways).
 - **Self-describing**: `toTaggedJson(Datum)` / `fromTaggedJson(json)`, which wrap the value as
   `{"typeId":"<TYPE_ID>","payload":{…}}` so a receiver recovers the type from the message. The type
-  is resolved through a generated `TYPE_ID → class` registry (`DatumTypeRegistry` in Java, with a
-  Python mirror). This is what the cross-language boundary (and, later, ZMQ) carries.
+  is resolved through the composite `DatumTypeRegistry` (Java; `datum/registry.py` in Python), built
+  from the core provider plus any extension providers discovered via the `DatumTypeProvider` SPI.
+  This is what the cross-language boundary (and, later, ZMQ) carries.
 
 The JSON engine (Jackson) is hidden entirely, so **pulse-beacon does not reference Jackson at all.**
 The JSONL gateways take no serializer argument; they use the shared singleton:
@@ -150,6 +160,26 @@ new JsonlReaderGateway<>("reader", topic, keys, path, start, end);
 Gateways handle serialisation at the boundary, and actors only ever see typed `Datum` values.
 
 ## Familiarizing Running Examples
+
+Pulse ships **two tiers of examples**, aimed at two different questions.
+
+- **Core examples** answer *"how does the platform work?"* They exercise the engine, time machine,
+  gateways, and actors (and the cross-language bridge) using the datum types pulse-beacon already
+  ships. They live inside the source tree, are importable and covered by tests, and are the fastest
+  way to see a run end to end. Java: `core/java/…/beacon/core/examples/`; Python-host counterparts:
+  `src/inventzia/pulse/beacon/core/examples/`. Run them straight from this repo or from an installed
+  wheel.
+- **The extension example** answers *"how do I add my own datum type?"* It is a standalone
+  downstream package that contributes a new type through the `DatumTypeProvider` SPI without
+  modifying pulse-data or pulse-beacon. Because that arms-length separation is the whole point, it
+  lives *outside* the `src` tree as its own buildable and installable package under
+  `examples/pulse-ext-example/`, and is deliberately not part of pulse-beacon's distribution or
+  default test run. You build and install it on demand.
+
+In short: the core examples use the types Pulse ships; the extension example shows an adopter
+bringing their own. The rest of this section covers each tier in turn.
+
+### Core examples (shipped with pulse-beacon)
 
 The runnable examples in `core/java/…/beacon/core/examples/` are the fastest way to see the
 platform work. Each has a `main`; run any from your IDE, or from the CLI:
@@ -206,6 +236,36 @@ Run either with `core/java/run-jep-example.sh [ExampleName]`; the historical run
 (`tests/test_historic_run_jep.py`). JEP is not part of release CI yet, so the beta supports JPype as
 its production-facing bridge and exposes JEP for evaluation only.
 
+### Extension example (a standalone package using the SPI)
+
+[`examples/pulse-ext-example/`](./examples/pulse-ext-example/) is a self-contained downstream package
+that defines its own datum, `ExtendedBar` (a `CdfBar` with extra order-flow fields), from a single
+schema, and lets both runtimes discover it through the pulse-data extension SPI (a Python
+`inventzia.pulse.datum_types` entry point, a Java `META-INF/services` provider) with no change to
+pulse-data or pulse-beacon.
+
+**Why it is separate, not another core example.** Its reason to exist is to prove that an *outside*
+package can extend the platform, so the arms-length separation is the demonstration: it keeps its
+own namespace (`inventzia.pulse.ext`), its own `pyproject.toml` and `pom.xml`, and its own release
+cadence, and it stays out of pulse-beacon's `src` tree and Maven build. Installing it deliberately
+changes the datum-type universe (the cross-language gate then also requires the extension jar on the
+JVM classpath), which is exactly why it is not part of pulse-beacon's distribution or default test
+run. Fold it into `src` and `ExtendedBar` would ship as a de-facto core type, discovered on every
+install; keeping it out is what makes it a faithful extension.
+
+**What is there.** Each operating mode has its own runnable entry point, in both languages, over a
+small shared core:
+
+- Java (run or debug from Eclipse as a Maven project): `HistoricExtendedBarExample` and
+  `RealTimeExtendedBarExample`, with shared logic in `ExtendedBarRun`.
+- Python (JPype host): `historical_extended_bar_run.py` and `realtime_extended_bar_run.py`, with
+  shared logic in `extended_bar_run.py`.
+
+Each flows `ExtendedBar` through the Java engine end to end, after discovery establishes the type
+universe. Build and run instructions are in its
+[README](./examples/pulse-ext-example/README.md); the high-level description of the SPI itself lives
+in the pulse-data README under "Adding a new data type".
+
 ## Current status
 
 The `core/java` module is functional end-to-end in both operating modes, covered by an integration
@@ -213,7 +273,10 @@ test (`HistoricalRunTest`, 20× repeated). The in-process cross-language bridge 
 embedding directions**, off one shared set of Python components and streamer: the **Python-host**
 (JPype) launcher and the **Java-host** (JEP) launcher each re-create `HistoricRunExample` with Python
 actors and a Python source gateway, and both pass parity (the Python printer sees exactly the
-all-Java event-time merge). The ZMQ out-of-process socket transport remains planned.
+all-Java event-time merge). The ZMQ out-of-process socket transport remains planned. Datum types are
+extensible: an independent package can contribute new types through the `DatumTypeProvider` SPI,
+discovered at engine startup and checked across languages by a type-universe fingerprint gate before
+any event flows (see the extension example above).
 
 | Area | Components | Status |
 |------|-----------|--------|
@@ -224,8 +287,9 @@ all-Java event-time merge). The ZMQ out-of-process socket transport remains plan
 | Actors | `AbstractActor` (publish helper + lifecycle hooks) | ✅ |
 | Logging | `Reporter`, `Slf4jReporter`, `ComponentReporter` (SLF4J/Logback), mirrored as a Python facade so Java and Python components log identically | ✅ |
 | File / periodic gateways | `gateway.file.Jsonl*`, `gateway.periodic.HeartBeatGateway` | ✅ |
-| Examples | `core.examples.*` (historic, market-data, real-time) | ✅ |
-| Type registry + tagged codec | pulse-data `DatumTypeRegistry` + `DatumCodec.toTaggedJson/fromTaggedJson` (both languages) | ✅ |
+| Examples | `core.examples.*` (historic, market-data, real-time) plus the standalone `pulse-ext-example` extension demo | ✅ |
+| Type registry + tagged codec | pulse-data composite `DatumTypeRegistry` (core provider + discovered `DatumTypeProvider` extensions) + `DatumCodec.toTaggedJson/fromTaggedJson` (both languages) | ✅ |
+| Extensible datum types (SPI) | `DatumTypeProvider` discovery (`ServiceLoader` / Python entry points), schema-manifest fingerprint, cross-language type-universe gate at engine startup | ✅ |
 | Cross-language Java half | `core.crosslanguage.CrossLanguageActor` / `CrossLanguageGateway` | ✅ |
 | Python `beacon.core` | actor/gateway bases, channel, dispatch, `Reporter`/`ComponentReporter` mirror, `CrossLanguageStreamer` | ✅ |
 | Python-host launchers | JPype historical run (`historic_run_jpype`, parity verified) and real-time run (`realtime_run_jpype`, mirrors `RealTimeHeartbeatExample`) | ✅ |
