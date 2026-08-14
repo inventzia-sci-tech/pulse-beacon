@@ -12,6 +12,7 @@
 package com.inventzia.pulse.beacon.core;
 
 import com.inventzia.pulse.data.datum.Datum;
+import com.inventzia.pulse.data.datum.DatumTypeRegistry;
 
 import java.util.HashSet;
 import java.util.List;
@@ -84,6 +85,13 @@ public abstract class AbstractEngine extends AbstractGateway {
     private final TimeMachine timeMachine;
 
     /**
+     * The datum-type universe for this run, established once by {@link #initialize()} via the
+     * explicit SPI discovery ({@link DatumTypeRegistry#discoverProviders()}). {@link #runInfo()}
+     * only reads it; discovery is never triggered as a side effect of an observability call.
+     */
+    private volatile DatumTypeRegistry typeRegistry;
+
+    /**
      * Used in REAL_TIME mode instead of the TimeMachine.
      *
      * <p><b>Beta limitation — no backpressure.</b> This queue is unbounded: a live
@@ -143,9 +151,15 @@ public abstract class AbstractEngine extends AbstractGateway {
      * @return an immutable snapshot of the run's mode and window
      */
     public RunInfo runInfo() {
-        var registry = com.inventzia.pulse.data.datum.DatumTypeRegistry.defaultRegistry();
+        // Read the universe established at initialize(); fall back to the accessor only if runInfo()
+        // is called before the engine initialised (no run yet), so this never bootstraps discovery
+        // as its own side effect in the normal flow.
+        DatumTypeRegistry registry = typeRegistry;
+        if (registry == null) {
+            registry = DatumTypeRegistry.defaultRegistry();
+        }
         List<String> providerIds = registry.providers().stream()
-                .map(com.inventzia.pulse.data.datum.DatumTypeRegistry.ProviderInfo::providerId)
+                .map(DatumTypeRegistry.ProviderInfo::providerId)
                 .sorted()
                 .toList();
         return new RunInfo(operatingMode(), startTime(), endTime(),
@@ -363,12 +377,23 @@ public abstract class AbstractEngine extends AbstractGateway {
     // ------------------------------------------------------------------
 
     /**
-     * Initialises the engine and determines the {@link OperatingMode}.
-     * Subclasses may override but must call {@code super.initialize()}.
+     * Initialises the engine, determines the {@link OperatingMode}, and discovers the datum-type
+     * Service Providers. Subclasses may override but must call {@code super.initialize()}.
      */
     @Override
     protected void initialize() {
         super.initialize(); // sets INITIALIZED and determines operatingMode
+
+        // Discover the datum-type Service Providers (the SPI): we must establish the type universe
+        // before the run begins. This runs the Service Provider Interface discovery — the core
+        // provider seeded directly, plus every extension DatumTypeProvider advertised on the
+        // classpath via java.util.ServiceLoader (META-INF/services) — validated and frozen.
+        //
+        // Do it here, explicitly and exactly once, at a deterministic lifecycle point, rather than
+        // let it be bootstrapped lazily as a side effect of the first runInfo() read. Two upshots:
+        // any provider/type conflict surfaces here at startup (not later on an observability call),
+        // and runInfo() becomes a pure read of the universe established below.
+        this.typeRegistry = DatumTypeRegistry.discoverProviders();
     }
 
     /**
