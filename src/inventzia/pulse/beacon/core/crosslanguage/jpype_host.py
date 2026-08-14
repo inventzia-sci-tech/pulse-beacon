@@ -103,14 +103,16 @@ class TypeUniverseMismatch(RuntimeError):
     """
 
 
-def start_jvm(jars_dir=None, verify=True) -> None:
+def start_jvm(jars_dir=None, verify=True, extra_classpath=None) -> None:
     """Start the embedded JVM on the Beacon classpath, if not already running.
 
     Classpath resolution order: explicit ``jars_dir`` → wheel-bundled runtime jar →
-    source-tree staged jars (see :func:`resolve_classpath`). The JVM is located via
-    ``JAVA_HOME``; in the shared ``pulse`` conda env that is set automatically by the
-    bundled OpenJDK, so no manual export is needed; outside it, point ``JAVA_HOME`` at
-    any JDK 17+. Idempotent.
+    source-tree staged jars (see :func:`resolve_classpath`). ``extra_classpath`` (a list of
+    jar paths) is appended, so an extension jar contributing datum types via
+    ``META-INF/services`` is discovered by the Java ``ServiceLoader``. The JVM is located via
+    ``JAVA_HOME``; in the shared ``pulse`` conda env that is set automatically by the bundled
+    OpenJDK, so no manual export is needed; outside it, point ``JAVA_HOME`` at any JDK 17+.
+    Idempotent.
 
     If ``verify`` (default), the Python and Java datum-type universes are compared once
     the JVM is up, before any event flows, and a mismatch raises
@@ -123,6 +125,9 @@ def start_jvm(jars_dir=None, verify=True) -> None:
         return
 
     jars, source = resolve_classpath(jars_dir)
+    if extra_classpath:
+        jars = list(jars) + [str(p) for p in extra_classpath]
+        source += f" + {len(extra_classpath)} extension jar(s)"
 
     if "JAVA_HOME" not in os.environ:
         # A jar is not a JVM. In the `pulse` env JAVA_HOME is set automatically;

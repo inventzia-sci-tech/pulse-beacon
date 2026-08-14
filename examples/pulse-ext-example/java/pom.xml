@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Inventzia-Commercial
+  Copyright (c) 2013-2026 Magrino Bini, Paola Apruzzese, Inventzia Science and Technology Ltd.
+-->
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>com.inventzia.pulse</groupId>
+    <artifactId>pulse-ext-example</artifactId>
+    <version>0.1.0</version>
+    <packaging>jar</packaging>
+
+    <name>pulse-ext-example (Java)</name>
+    <description>
+        Example pulse-data extension: the ExtendedBar datum record and its generated
+        DatumTypeProvider, discovered by pulse-data's registry via META-INF/services.
+    </description>
+
+    <properties>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.release>17</maven.compiler.release>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.inventzia.pulse</groupId>
+            <artifactId>pulse-data</artifactId>
+            <version>0.2.0-SNAPSHOT</version>
+            <scope>provided</scope>
+        </dependency>
+        <!-- Generated records use Jackson annotations (compile-only via pulse-data). -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+            <version>2.18.2</version>
+            <scope>provided</scope>
+        </dependency>
+        <!--
+          Only the runnable example (com.inventzia.pulse.ext.examples.HistoricExtendedBarExample)
+          needs the engine; the ExtendedBar datum and its provider need only pulse-data. Kept
+          'provided' so the extension jar does not advertise a runtime dependency on the engine,
+          while still resolving on the compile and IDE (Eclipse) run/debug classpath. Brings
+          pulse-data, Jackson, and the logging backend transitively.
+        -->
+        <dependency>
+            <groupId>com.inventzia.pulse</groupId>
+            <artifactId>pulse-beacon-core</artifactId>
+            <version>0.2.0-SNAPSHOT</version>
+            <scope>provided</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+            </plugin>
+        </plugins>
+    </build>
+</project>

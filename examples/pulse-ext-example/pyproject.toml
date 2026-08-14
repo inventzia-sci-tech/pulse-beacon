@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Inventzia-Commercial
+# Copyright (c) 2013-2026 Magrino Bini, Paola Apruzzese, Inventzia Science and Technology Ltd.
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pulse-ext-example"
+version = "0.1.0"
+description = "Example pulse-data extension: an ad-hoc ExtendedBar datum contributed via the DatumTypeProvider SPI."
+requires-python = ">=3.11"
+dependencies = ["pulse-data>=0.2,<0.3"]
+
+# The extension registers its provider through the SPI entry-point group. pulse-data's
+# composite registry discovers it and merges ExtendedBar into the type universe, with no
+# change to pulse-data itself.
+[project.entry-points."inventzia.pulse.datum_types"]
+ext = "inventzia.pulse.ext.schemas.provider:ExtDatumTypeProvider"
+
+# PEP 420 namespace packages, sharing the inventzia.pulse.* prefix with pulse-data.
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["inventzia*"]
+namespaces = true

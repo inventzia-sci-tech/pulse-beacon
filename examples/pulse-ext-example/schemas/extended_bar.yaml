@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later OR LicenseRef-Inventzia-Commercial
+# Copyright (c) 2013-2026 Magrino Bini, Paola Apruzzese, Inventzia Science and Technology Ltd.
+
+$schema: "http://json-schema.org/draft-07/schema#"
+$id: "com.inventzia.pulse.ext.schemas.ExtendedBar"
+title: ExtendedBar
+description: >-
+  An example extension datum: a CdfBar-style market bar with extra order-flow fields,
+  defined by an independent package (pulse-ext-example) and contributed through the
+  DatumTypeProvider SPI without modifying pulse-data.
+type: object
+additionalProperties: false
+
+properties:
+
+  symb:
+    type: string
+    description: Instrument symbol.
+    x-datum-key: true
+
+  timestamp:
+    type: integer
+    format: int64
+    description: Epoch milliseconds of the bar open.
+    x-datum-time: true
+
+  op:   { type: number, format: decimal, description: Open price. }
+  hi:   { type: number, format: decimal, description: High price. }
+  lo:   { type: number, format: decimal, description: Low price. }
+  cl:   { type: number, format: decimal, description: Close price. }
+  vlm:  { type: number, format: decimal, description: Volume traded. }
+
+  # --- the extension's extra fields ---
+  bidVolume:  { type: number,  format: decimal, description: Volume traded at the bid. }
+  askVolume:  { type: number,  format: decimal, description: Volume traded at the ask. }
+  tradeCount: { type: integer, format: int64,   description: Number of trades in the bar. }
+  venue:      { type: string,  description: Optional source venue. }
+
+required:
+  - symb
+  - timestamp
+  - op
+  - hi
+  - lo
+  - cl
+  - vlm
+  - bidVolume
+  - askVolume
+  - tradeCount

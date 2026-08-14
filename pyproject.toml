@@ -80,3 +80,11 @@ namespaces = true
 # Example input fixtures, so the documented examples run from an installed wheel
 # (accessed via importlib.resources, not a source-tree path).
 "inventzia.pulse.beacon.core.examples" = ["_data/*.jsonl"]
+
+[tool.pytest.ini_options]
+# The core suite lives under tests/. examples/ holds standalone demo packages
+# (e.g. pulse-ext-example) with their own build and test lifecycle; they are NOT
+# part of pulse-beacon's distribution and must not be collected here, since an
+# installed extension deliberately changes the datum-type universe (which the
+# cross-language gate then rejects unless its jar is also on the JVM classpath).
+testpaths = ["tests"]
