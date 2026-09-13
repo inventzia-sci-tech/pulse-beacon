@@ -95,6 +95,18 @@ def resolve_classpath(jars_dir=None) -> tuple[list[str], str]:
         f"cp target/pulse-beacon-core-*.jar jars/)")
 
 
+def _normalize_classpath_entry(entry: str) -> str:
+    """Canonicalize a classpath entry for comparison (absolute path, OS-normalized case/sep)."""
+    return os.path.normcase(os.path.abspath(str(entry)))
+
+
+def _running_classpath_entries() -> set[str]:
+    """The normalized entries on the already-running JVM's ``java.class.path``."""
+    from jpype import JClass
+    raw = JClass("java.lang.System").getProperty("java.class.path") or ""
+    return {_normalize_classpath_entry(e) for e in str(raw).split(os.pathsep) if e}
+
+
 class TypeUniverseMismatch(RuntimeError):
     """The Python and Java datum-type universes disagree; the bridge must not run.
 
@@ -117,11 +129,35 @@ def start_jvm(jars_dir=None, verify=True, extra_classpath=None) -> None:
     If ``verify`` (default), the Python and Java datum-type universes are compared once
     the JVM is up, before any event flows, and a mismatch raises
     :class:`TypeUniverseMismatch` (see :func:`verify_type_universe`).
+
+    **Reusing an existing JVM.** If a JVM is already running (a prior ``start_jvm``, a re-run
+    notebook cell, a retry after a failed verification, or a host application that booted the
+    JVM), this does not silently no-op: verification (when ``verify``) still runs, so a
+    mismatch present now is caught rather than slipping through just because the JVM started
+    earlier. And because a running JVM's classpath cannot be changed, any requested classpath
+    additions (``jars_dir`` / ``extra_classpath``) that are not already on it raise a
+    :class:`RuntimeError` rather than being silently ignored.
     """
     import jpype
 
     if jpype.isJVMStarted():
+        # A running JVM's classpath is fixed. If the caller asked to add jars that are not
+        # already on it, they cannot be honored — fail loudly instead of silently dropping them.
+        if jars_dir is not None or extra_classpath:
+            requested = list(resolve_classpath(jars_dir)[0]) if jars_dir is not None else []
+            requested += [str(p) for p in (extra_classpath or [])]
+            on_classpath = _running_classpath_entries()
+            missing = [j for j in requested if _normalize_classpath_entry(j) not in on_classpath]
+            if missing:
+                raise RuntimeError(
+                    "JVM already running; its classpath cannot be changed, but start_jvm() was "
+                    f"asked to add jars that are not on it: {missing}. Start the JVM once with the "
+                    "full classpath (including every extension jar) before any other JPype use.")
         _log.large_info("JVM already running; reusing it")
+        # Verification must still run on reuse (notebooks, retries, host-app JVMs): a mismatch
+        # now must not pass just because the JVM was started by an earlier call.
+        if verify:
+            verify_type_universe()
         return
 
     jars, source = resolve_classpath(jars_dir)

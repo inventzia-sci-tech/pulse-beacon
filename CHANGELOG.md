@@ -19,6 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `providerIds`, so a run is traceable to the exact set of types it could route (auditability /
   reproducibility). `AbstractEngine.runInfo()` populates them from the composite registry.
 
+### Fixed
+
+- **`start_jvm()` no longer fails open when a JVM is already running.** Previously it returned
+  immediately on `isJVMStarted()`, so verification was skipped and a mismatch present on JVM reuse
+  (retries after a failed verify, notebooks, host applications that already booted the JVM) passed
+  silently, and any requested `extra_classpath` / `jars_dir` was dropped without warning. The reuse
+  path now still runs `verify_type_universe()` (unless `verify=False`), and raises `RuntimeError`
+  if asked to add jars that are not already on the running JVM's classpath (a running JVM's
+  classpath cannot be changed) instead of ignoring them.
+
 ### Added (run observer)
 
 - `RunInfo(OperatingMode mode, long startTime, long endTime)` + public

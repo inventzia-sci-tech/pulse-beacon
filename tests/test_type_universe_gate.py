@@ -64,3 +64,45 @@ def test_mismatch_is_detected_and_names_the_extra_type(beacon_jvm):
     message = str(excinfo.value)
     assert "com.ext.Extra" in message
     assert "only in Python" in message
+
+
+# --- reusing an already-running JVM (the isJVMStarted early-return path) ---------------------
+# Regression: start_jvm() must not silently no-op when a JVM already exists. Verification has to
+# run on reuse (else a mismatch slips through on retries / notebooks / host-app JVMs), and
+# classpath additions that cannot be applied to a running JVM must fail loudly, not be dropped.
+
+def test_reuse_still_verifies(beacon_jvm, monkeypatch):
+    from inventzia.pulse.beacon.core.crosslanguage import jpype_host
+
+    calls = []
+    monkeypatch.setattr(jpype_host, "verify_type_universe", lambda *a, **k: calls.append(1))
+    jpype_host.start_jvm()                       # JVM already up -> reuse path
+    assert calls == [1]                          # verification ran, not skipped
+
+
+def test_reuse_with_verify_false_skips_verification(beacon_jvm, monkeypatch):
+    from inventzia.pulse.beacon.core.crosslanguage import jpype_host
+
+    calls = []
+    monkeypatch.setattr(jpype_host, "verify_type_universe", lambda *a, **k: calls.append(1))
+    jpype_host.start_jvm(verify=False)
+    assert calls == []
+
+
+def test_reuse_rejects_unappliable_classpath(beacon_jvm):
+    from inventzia.pulse.beacon.core.crosslanguage import jpype_host
+
+    with pytest.raises(RuntimeError, match="classpath cannot be changed"):
+        jpype_host.start_jvm(extra_classpath=["/no/such/extension-6b1f.jar"], verify=False)
+
+
+def test_reuse_allows_classpath_already_present(beacon_jvm, monkeypatch):
+    import os
+    from jpype import JClass
+
+    from inventzia.pulse.beacon.core.crosslanguage import jpype_host
+
+    raw = str(JClass("java.lang.System").getProperty("java.class.path") or "")
+    already_on = next(e for e in raw.split(os.pathsep) if e)   # an entry already on the classpath
+    monkeypatch.setattr(jpype_host, "verify_type_universe", lambda *a, **k: None)
+    jpype_host.start_jvm(extra_classpath=[already_on])          # must NOT raise
