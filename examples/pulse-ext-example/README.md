@@ -116,3 +116,72 @@ Both entry points print `EXTENDED BAR RUN OK`. The Maven build needs `pulse-data
 (or import those projects into the same Eclipse workspace, where m2e resolves them directly).
 
 To regenerate the bindings after editing the schema, run `./regen.sh`.
+
+## Running core vs. extension examples (the type-universe toggle)
+
+There is one thing that surprises people: **once this extension is installed, the *core*
+pulse-beacon examples stop running**, failing at startup with something like:
+
+```
+TypeUniverseMismatch: cross-language datum-type universe mismatch (python=ad9d823d, java=64d6f05d):
+  com.inventzia.pulse.ext.schemas.ExtendedBar: only in Python
+```
+
+That is not a bug. It is the cross-language safety gate doing its job, and it is worth
+understanding because it explains how the two sides of the bridge stay honest.
+
+### Why the gate exists
+
+Events cross the Python/Java boundary as self-describing tagged JSON
+(`{"typeId": "...", "payload": {...}}`). To turn such a message back into an object, the receiving
+side must know that `typeId`. So both sides keep a registry of the datum types they know, and each
+side boils its whole registry down to one short **fingerprint** (a hash of every type's exact
+shape). The instant the JVM starts, **before a single event is allowed to flow**, the two
+fingerprints are compared:
+
+- **Match** means both runtimes provably agree on every type, so the run proceeds.
+- **Mismatch** means one side knows a type the other does not. The gate stops immediately and names
+  the offending type, rather than letting the run start and then blow up (or silently misdecode)
+  later, when that type first appears mid-run.
+
+Failing fast at startup turns a scary, data-dependent, mid-run failure into a boring, obvious error
+message at launch.
+
+### Why installing this package breaks the core examples
+
+The Python side and the Java side are set by two independent switches:
+
+- **Python's** known types come from what is **installed** in the environment (global to the env).
+  Installing this package registers `ExtendedBar` through its entry point, so *every* Python run in
+  that env now sees `ExtendedBar`, including the core examples.
+- **Java's** known types come from **which jars that particular run puts on the JVM classpath**.
+  Each run starts its own fresh JVM. The extension examples call `start_jvm(extra_classpath=[…])` to
+  add the extension jar, so their JVM has core + ext. The core examples add nothing, so their JVM
+  has core only.
+
+So with the extension installed:
+
+| Run | Python universe | Java universe | Gate |
+|-----|-----------------|---------------|------|
+| an extension example | core + ext | core + ext (ext jar added) | matches, runs |
+| a core example | core + ext (still installed) | core only (no ext jar) | mismatch, stops |
+
+The core example fails not because it uses a smaller set of the *same* JVM, but because its JVM is
+core-only while Python is still carrying the extension. The gate compares for exact equality in both
+directions, so "the extension is just a superset" is not a pass.
+
+### The toggle
+
+Match the environment to the tier you want to run:
+
+```bash
+# to run the EXTENSION examples
+pip install --no-deps -e .
+
+# to run the CORE pulse-beacon examples again
+pip uninstall -y pulse-ext-example
+```
+
+This is exactly how a real deployment behaves: an extension is present because its package is
+installed and its jar is on the classpath, and both runtimes are configured together. The toggle is
+only visible here because a single dev environment hosts both tiers at once.
