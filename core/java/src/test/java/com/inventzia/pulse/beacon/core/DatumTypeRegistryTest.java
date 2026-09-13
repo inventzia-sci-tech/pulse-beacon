@@ -68,6 +68,10 @@ class DatumTypeRegistryTest {
                 List.of(new DatumTypeBinding(HeartBeat.TYPE_ID, 0, HeartBeat.class)))))
                 .as("non-positive type version").isInstanceOf(IllegalStateException.class);
         assertThatThrownBy(() -> DatumTypeRegistry.of(provider(CORE_NS, 1, "1.0",
+                List.of(new DatumTypeBinding(HeartBeat.TYPE_ID, HeartBeat.TYPE_VERSION + 1, HeartBeat.class)))))
+                .as("type version drift (positive, but disagrees with class TYPE_VERSION)")
+                .isInstanceOf(IllegalStateException.class);
+        assertThatThrownBy(() -> DatumTypeRegistry.of(provider(CORE_NS, 1, "1.0",
                 List.of(new DatumTypeBinding(CORE_NS + ".Wrong", 1, HeartBeat.class)))))
                 .as("descriptor drift").isInstanceOf(IllegalStateException.class);
     }

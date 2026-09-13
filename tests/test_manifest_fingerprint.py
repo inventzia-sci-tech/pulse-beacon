@@ -86,6 +86,28 @@ def test_unsupported_wire_keyword_fails_generation():
         m.type_fingerprint(s)
 
 
+@pytest.mark.parametrize("mutate, why", [
+    (lambda s: s["properties"]["v"].__setitem__("x-datum-key", True),
+     "two x-datum-key: ambiguous routing key"),
+    (lambda s: s["properties"]["v"].__setitem__("x-datum-time", True),
+     "two x-datum-time: ambiguous routing time"),
+    (lambda s: s["properties"]["k"].__setitem__("x-datum-key", False),
+     "no x-datum-key at all"),
+    (lambda s: s.__setitem__("required", ["k", "t", "ghost"]),
+     "required names a property that does not exist"),
+    (lambda s: s.__setitem__("x-version", 1.5),
+     "fractional x-version silently truncated by int()"),
+    (lambda s: s.__setitem__("x-version", 0),
+     "non-positive x-version"),
+])
+def test_invalid_schema_fails_generation(mutate, why):
+    m = _load_manifest_module()
+    s = _schema()
+    mutate(s)
+    with pytest.raises(m.UnsupportedSchema):
+        m.type_fingerprint(s)
+
+
 @pytest.mark.integration
 def test_python_and_java_composite_fingerprints_match(beacon_jvm):
     from inventzia.pulse.data.datum.registry import default_registry

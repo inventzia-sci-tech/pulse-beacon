@@ -58,6 +58,8 @@ def test_isolated_registry_from_explicit_providers():
     (_provider(bindings=[]), "empty provider"),
     (_provider(provider_id="com.evil"), "TYPE_ID outside the provider namespace"),
     (_provider(bindings=[DatumTypeBinding(HeartBeat.TYPE_ID, 0, HeartBeat)]), "non-positive TYPE_VERSION"),
+    (_provider(bindings=[DatumTypeBinding(HeartBeat.TYPE_ID, HeartBeat.TYPE_VERSION + 1, HeartBeat)]),
+     "type_version disagrees with the class TYPE_VERSION (positive, but drifted)"),
     (_provider(bindings=[DatumTypeBinding(_CORE_NS + ".Wrong", 1, HeartBeat)]), "descriptor drift"),
     (_provider(bindings=[DatumTypeBinding(_CORE_NS + ".Bad", 1, dict)]), "class is not a pydantic model"),
 ])
