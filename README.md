@@ -74,7 +74,7 @@ Key properties:
   package can contribute its own datum types, which both runtimes discover at startup with no change
   to pulse-data or pulse-beacon. For the full description see "Adding a new data type" in the
   [pulse-data README](https://github.com/inventzia-sci-tech/pulse-data#adding-a-new-data-type), and
-  the runnable [`pulse-ext-example`](./examples/pulse-ext-example/) for a worked end-to-end example.
+  the runnable [`pulse-ext-example`](https://github.com/inventzia-sci-tech/pulse-beacon/tree/main/examples/pulse-ext-example/) for a worked end-to-end example.
 - **Fault isolation in dispatch.** A throwing actor is caught, logged with its stack trace, and
   skipped: the run continues and the other actors on that event are unaffected (a buggy strategy
   cannot abort a replay). A failing *subscriber/sink gateway* is treated as a broken boundary and is
@@ -107,7 +107,7 @@ be an external clock-driving source, all running against the same Java engine.
 The in-process bridge keeps the determinism handshake cheap (a method call, not a network
 round-trip), which matters for tight historical replay; ZMQ is the natural fit for live or
 distributed deployment. Both sit behind one Python programming model, described in
-[`docs/cross-language-python-inprocess.md`](./docs/cross-language-python-inprocess.md).
+[`docs/cross-language-python-inprocess.md`](https://github.com/inventzia-sci-tech/pulse-beacon/blob/main/docs/cross-language-python-inprocess.md).
 
 ### Folder layout
 
@@ -220,7 +220,7 @@ needed) and a Beacon classpath. `jpype_host` finds that classpath automatically:
 shaded **runtime jar** if present (build it with `./build-runtime-jar.sh`, which the wheel embeds so
 an installed `pip install pulse-beacon[jpype]` starts the JVM with no external jars), otherwise the
 Maven jars staged in `core/java/jars/` (see
-[the cross-language spec](./docs/cross-language-python-inprocess.md)). The historical run's
+[the cross-language spec](https://github.com/inventzia-sci-tech/pulse-beacon/blob/main/docs/cross-language-python-inprocess.md)). The historical run's
 parity is also asserted as a pytest:
 
 ```bash
@@ -231,14 +231,14 @@ conda run -n pulse python -m pytest tests/test_historic_run_jpype.py
 embedding direction): `examples/HistoricRunJepExample.java` and `examples/RealTimeRunJepExample.java`,
 driven by `crosslanguage/JepLauncher.java` + the Python factory `crosslanguage/jep_host.py`. JEP needs
 a native setup (jar + `libjep`/`jep.dll` + libpython); see
-[`core/java/.../crosslanguage/JEP_README.md`](./core/java/src/main/java/com/inventzia/pulse/beacon/core/crosslanguage/JEP_README.md).
+[`core/java/.../crosslanguage/JEP_README.md`](https://github.com/inventzia-sci-tech/pulse-beacon/blob/main/core/java/src/main/java/com/inventzia/pulse/beacon/core/crosslanguage/JEP_README.md).
 Run either with `core/java/run-jep-example.sh [ExampleName]`; the historical run's parity is a pytest
 (`tests/test_historic_run_jep.py`). JEP is not part of release CI yet, so the beta supports JPype as
 its production-facing bridge and exposes JEP for evaluation only.
 
 ### Extension example (a standalone package using the SPI)
 
-[`examples/pulse-ext-example/`](./examples/pulse-ext-example/) is a self-contained downstream package
+[`examples/pulse-ext-example/`](https://github.com/inventzia-sci-tech/pulse-beacon/tree/main/examples/pulse-ext-example/) is a self-contained downstream package
 that defines its own datum, `ExtendedBar` (a `CdfBar` with extra order-flow fields), from a single
 schema, and lets both runtimes discover it through the pulse-data extension SPI (a Python
 `inventzia.pulse.datum_types` entry point, a Java `META-INF/services` provider) with no change to
@@ -263,7 +263,7 @@ small shared core:
 
 Each flows `ExtendedBar` through the Java engine end to end, after discovery establishes the type
 universe. Build and run instructions are in its
-[README](./examples/pulse-ext-example/README.md); the high-level description of the SPI itself lives
+[README](https://github.com/inventzia-sci-tech/pulse-beacon/blob/main/examples/pulse-ext-example/README.md); the high-level description of the SPI itself lives
 in the pulse-data README under "Adding a new data type".
 
 ## Current status
@@ -324,22 +324,22 @@ pulse-data? The base env alone is enough.)
 This project is dual-licensed:
 
 - **Open Source (AGPL v3.0 or later)**: free to use, modify, and distribute under the terms of the
-  GNU Affero General Public License v3.0. See [`LICENSE-AGPL-3.0`](./LICENSE-AGPL-3.0).
+  GNU Affero General Public License v3.0. See [`LICENSE-AGPL-3.0`](https://github.com/inventzia-sci-tech/pulse-beacon/blob/main/LICENSE-AGPL-3.0).
 - **Commercial License**: use in proprietary or closed-source projects without AGPL obligations.
-  See [`COMMERCIAL.md`](./COMMERCIAL.md) for the informational summary and
-  [`LICENSE-COMMERCIAL.txt`](./LICENSE-COMMERCIAL.txt) for the binding terms.
+  See [`COMMERCIAL.md`](https://github.com/inventzia-sci-tech/pulse-beacon/blob/main/COMMERCIAL.md) for the informational summary and
+  [`LICENSE-COMMERCIAL.txt`](https://github.com/inventzia-sci-tech/pulse-beacon/blob/main/LICENSE-COMMERCIAL.txt) for the binding terms.
 
 Contact: operations@inventzia.com for commercial licensing.
 
 ## Contributing
 
 Contributions are welcome. By submitting a contribution you agree to the terms in
-[`CLA.md`](./CLA.md), including the Developer Certificate of Origin sign-off and the
+[`CLA.md`](https://github.com/inventzia-sci-tech/pulse-beacon/blob/main/CLA.md), including the Developer Certificate of Origin sign-off and the
 dual-licensing grant. CI enforces DCO sign-off on every PR commit.
 
 ## Security
 
-Please report security vulnerabilities privately as described in [`SECURITY.md`](./SECURITY.md).
+Please report security vulnerabilities privately as described in [`SECURITY.md`](https://github.com/inventzia-sci-tech/pulse-beacon/blob/main/SECURITY.md).
 Do not open public issues for security problems.
 
 ## Trademarks

@@ -18,7 +18,7 @@ backend-path = ["."]
 
 [project]
 name = "pulse-beacon"
-version = "0.2.0"
+version = "0.2.1"
 description = "Event-driven engine and in-process cross-language bridge for the Pulse platform (Python extension of the Java Beacon core)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -51,7 +51,7 @@ classifiers = [
 # installed Python pulse-data must be that same version, not merely compatible.
 # Bumped in lockstep with the release (check-versions.sh --release enforces it).
 dependencies = [
-    "pulse-data==0.2.0",
+    "pulse-data==0.2.1",
 ]
 
 [project.optional-dependencies]
@@ -62,6 +62,8 @@ jep = ["jep==4.2.2"]  # pinned to the Maven Central version so compile and runti
 
 [project.urls]
 Homepage = "https://inventzia.com"
+Repository = "https://github.com/inventzia-sci-tech/pulse-beacon"
+Changelog = "https://github.com/inventzia-sci-tech/pulse-beacon/blob/main/CHANGELOG.md"
 
 # src/ layout, PEP 420 namespace packages — no __init__.py at inventzia/ or
 # inventzia/pulse/, so pulse-beacon shares the inventzia.pulse.* namespace with
