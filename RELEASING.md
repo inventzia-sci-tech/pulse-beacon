@@ -48,6 +48,22 @@ Set the release version in exactly these six places (example: `0.1.0b1`):
 - `pulse-beacon/pyproject.toml`    → `version = "0.1.0b1"` **and** the dep `"pulse-data==0.1.0b1"`
 - `pulse-beacon/core/java/pom.xml` → `<version>0.1.0b1</version>` **and** `<pulse-data.version>0.1.0b1</pulse-data.version>`
 
+**Then regenerate** the pulse-data bindings, because the generated `CoreDatumTypeProvider`
+bakes `package_version` from the project version. Skipping this leaves the committed provider
+on the old version and the regen-drift CI check fails (and, worse, the built wheels bake the
+wrong `package_version`):
+
+```bash
+( cd pulse-data
+  python schemas/schemas-generators/generate_python.py
+  python schemas/schemas-generators/generate_java.py \
+      --schemas-dir schemas/schemas_yaml --output-dir schemas/schemas_java \
+      --base-package com.inventzia.pulse.data.schemas )
+```
+
+Only `CoreDatumTypeProvider` (`package_version`) should change; the manifest/fingerprint does
+not. So the order is always **flip version → regenerate → gate → build**.
+
 Verify before committing (must report "release versions consistent"):
 
 ```bash

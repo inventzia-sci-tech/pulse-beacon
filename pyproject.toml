@@ -18,7 +18,7 @@ backend-path = ["."]
 
 [project]
 name = "pulse-beacon"
-version = "0.2.2"
+version = "0.3.0"
 description = "Event-driven engine and in-process cross-language bridge for the Pulse platform (Python extension of the Java Beacon core)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -51,7 +51,7 @@ classifiers = [
 # installed Python pulse-data must be that same version, not merely compatible.
 # Bumped in lockstep with the release (check-versions.sh --release enforces it).
 dependencies = [
-    "pulse-data==0.2.2",
+    "pulse-data==0.3.0",
 ]
 
 [project.optional-dependencies]
