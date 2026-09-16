@@ -31,14 +31,18 @@ authors = [
 maintainers = [
     { name = "Inventzia Science and Technology Ltd.", email = "operations@inventzia.com" },
 ]
-keywords = ["pulse", "event-driven", "algorithmic-trading", "jpype", "jep", "cross-language"]
+keywords = ["pulse", "event-driven", "deterministic-replay", "simulation", "typed-events", "cross-language", "real-time", "algorithmic-trading", "iot", "jpype", "jep"]
 classifiers = [
     "Development Status :: 4 - Beta",
-    "Intended Audience :: Financial and Insurance Industry",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: System Administrators",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Java",
-    "Topic :: Office/Business :: Financial :: Investment",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
     "Operating System :: OS Independent",
 ]
 
