@@ -19,7 +19,7 @@ backend-path = ["."]
 [project]
 name = "pulse-beacon"
 version = "0.3.0"
-description = "Event-driven engine and in-process cross-language bridge for the Pulse platform (Python extension of the Java Beacon core)."
+description = "An event-driven engine for deterministic replay and simulation, with in-process Python and Java interoperability."
 readme = "README.md"
 requires-python = ">=3.11"
 license = "AGPL-3.0-or-later OR LicenseRef-Inventzia-Commercial"
@@ -31,13 +31,12 @@ authors = [
 maintainers = [
     { name = "Inventzia Science and Technology Ltd.", email = "operations@inventzia.com" },
 ]
-keywords = ["pulse", "event-driven", "deterministic-replay", "simulation", "typed-events", "cross-language", "real-time", "algorithmic-trading", "iot", "jpype", "jep"]
+keywords = ["pulse", "event-driven", "deterministic-replay", "simulation", "event-processing", "typed-events", "cross-language", "jpype"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Intended Audience :: Information Technology",
     "Intended Audience :: Science/Research",
-    "Intended Audience :: System Administrators",
     "Programming Language :: Python :: 3 :: Only",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Java",
