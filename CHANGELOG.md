@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`release-build.sh` guards against stale-build wheel contamination.** It now removes each
+  package's `build/` before building and verifies every packaged `.py` exists in `src/`, so a module
+  deleted from source but left in `build/lib` (as an obsolete pulse-data `schemas/registry.py` once
+  was, shipping in the 0.2.2 wheel) cannot be zipped into a release wheel.
+
 ## [0.2.2] - 2026-09-15
 
 ### Fixed
