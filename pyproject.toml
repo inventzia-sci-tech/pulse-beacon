@@ -31,7 +31,7 @@ authors = [
 maintainers = [
     { name = "Inventzia Science and Technology Ltd.", email = "operations@inventzia.com" },
 ]
-keywords = ["pulse", "event-driven", "deterministic-replay", "simulation", "event-processing", "typed-events", "cross-language", "jpype"]
+keywords = ["pulse", "event-driven", "deterministic-replay", "simulation", "event-processing", "typed-events", "cross-language", "jpype", "algorithmic-trading", "iot"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
