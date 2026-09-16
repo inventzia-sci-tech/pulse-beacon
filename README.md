@@ -5,6 +5,35 @@ producers and consumers. It provides the infrastructure layer (engine, time mach
 actor base classes) with no domain-specific vocabulary in its core. Algo-trading strategies, IoT
 pipelines, or any other application domain sit on top of it.
 
+## Quickstart
+
+```bash
+pip install "pulse-beacon[jpype]"
+```
+
+This pulls `pulse-data` (the shared event types) automatically. The `[jpype]` extra adds the
+in-process Python/Java bridge; a bare `pip install pulse-beacon` omits it.
+
+**You also need a JDK 17+**, because the engine runs on a JVM. The wheel bundles the engine as a
+classpath jar, but a jar is not a JVM, so point `JAVA_HOME` at any JDK 17 or newer (check yours with
+`java -version`). No Maven or separate download is required at runtime.
+
+Then run a bundled cross-language example, a Python source gateway and consumers driving the Java
+engine over the JPype bridge:
+
+```bash
+python -m inventzia.pulse.beacon.core.examples.historic_run_jpype
+# ... {historic-run-jpype} : engine status: COMPLETE; printer received 10 events
+# PARITY OK
+```
+
+That single run merges two Python-fed streams and a heartbeat in event-time order through the Java
+time machine and delivers them to Python actors: the whole cross-language path in one command. See
+[Familiarizing Running Examples](#familiarizing-running-examples) for the real-time and market-data
+variants, and
+[`examples/pulse-ext-example`](https://github.com/inventzia-sci-tech/pulse-beacon/tree/main/examples/pulse-ext-example/)
+for adding your own datum type.
+
 ## Mission
 
 pulse-beacon exists to make an event-driven system's behaviour **trustworthy enough to research on
