@@ -13,6 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   package's `build/` before building and verifies every packaged `.py` exists in `src/`, so a module
   deleted from source but left in `build/lib` (as an obsolete pulse-data `schemas/registry.py` once
   was, shipping in the 0.2.2 wheel) cannot be zipped into a release wheel.
+- **Runtime jar embeds the correct pulse-data Maven descriptor.** The shaded runtime jar carried a
+  stale pulse-data `pom.xml`/`pom.properties` (`0.2.0-SNAPSHOT`, including in the 0.2.2 release)
+  because `mvn install` without `clean` never regenerates
+  `target/classes/META-INF/maven/.../pom.properties`. `release-build.sh` now clean-installs pulse-data
+  before shading, `build-runtime-jar.sh` asserts the embedded pulse-data descriptor matches the
+  resolved version, and CI uses `clean install`. Classes and behaviour were always correct; only the
+  embedded Maven metadata was stale.
 
 ## [0.2.2] - 2026-09-15
 

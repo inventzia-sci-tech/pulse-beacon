@@ -38,7 +38,7 @@ jobs:
           java-version: '17'
           cache: maven
       - name: Install pulse-data to local .m2
-        run: mvn -B -ntp -f pulse-data/pom.xml install -DskipTests
+        run: mvn -B -ntp -f pulse-data/pom.xml clean install -DskipTests
       - name: Verify pulse-beacon-core (jep from Central)
         run: mvn -B -ntp -f pulse-beacon/core/java/pom.xml verify
 
@@ -69,7 +69,7 @@ jobs:
         run: python -m pip install --upgrade build
 
       - name: Install pulse-data jar to local .m2 (needed by the runtime jar)
-        run: mvn -B -ntp -f pulse-data/pom.xml install -DskipTests
+        run: mvn -B -ntp -f pulse-data/pom.xml clean install -DskipTests
 
       - name: Build the bundled runtime jar
         working-directory: pulse-beacon
@@ -108,7 +108,7 @@ jobs:
 
       - name: Build pulse-data jar + runtime jar
         run: |
-          mvn -B -ntp -f pulse-data/pom.xml install -DskipTests
+          mvn -B -ntp -f pulse-data/pom.xml clean install -DskipTests
           cd pulse-beacon && ./build-runtime-jar.sh
 
       - name: Build release wheels (with bundled jar)
@@ -157,7 +157,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install pulse-data jar to local .m2
-        run: mvn -B -ntp -f pulse-data/pom.xml install -DskipTests
+        run: mvn -B -ntp -f pulse-data/pom.xml clean install -DskipTests
       - name: Validate immutable release inputs
         run: |
           test "$(git -C pulse-beacon describe --tags --exact-match)" = "$GITHUB_REF_NAME"

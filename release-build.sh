@@ -57,7 +57,12 @@ echo "==> pulse-data wheel"
 ( cd "$DATA" && "$PY" -m build --wheel -o "$OUT" )
 verify_wheel "$(ls -t "$OUT"/pulse_data-*.whl | head -1)" "$DATA"
 
-echo "==> pulse-beacon runtime jar"
+echo "==> pulse-data jar -> local .m2 (clean, so the shaded runtime jar embeds a current descriptor)"
+# 'mvn install' without clean keeps a stale target/classes/META-INF/maven/.../pom.properties, so
+# the shaded jar would bake an old pulse-data version (0.2.2 shipped a 0.2.0-SNAPSHOT descriptor).
+( cd "$DATA" && mvn -q clean install -DskipTests )
+
+echo "==> pulse-beacon runtime jar (its build asserts the embedded pulse-data descriptor)"
 ( cd "$BEACON" && ./build-runtime-jar.sh )
 test -f "$JAR" || { echo "FATAL: runtime jar not produced at $JAR" >&2; exit 1; }
 

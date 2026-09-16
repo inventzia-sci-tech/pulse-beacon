@@ -62,6 +62,20 @@ head -n 5 "$CHECK_DIR/META-INF/NOTICE" | grep -Fq "Inventzia Science and Technol
     exit 1
 }
 
+# The shaded jar must embed pulse-data's Maven descriptor at the version this build resolves,
+# not a stale one left in pulse-data's target/ by a non-clean build. maven-jar-plugin does not
+# overwrite target/classes/META-INF/maven/.../pom.properties, so `mvn install` (no clean) bakes
+# the first-ever version forever (this is how 0.2.2 shipped a 0.2.0-SNAPSHOT descriptor). Rebuild
+# pulse-data with `mvn clean install` if this fails.
+EXPECTED_PD="$(sed -n 's:.*<pulse-data\.version>\(.*\)</pulse-data\.version>.*:\1:p' "$JAVA_DIR/pom.xml" | head -1)"
+( cd "$CHECK_DIR" && jar xf "$SHADED" META-INF/maven/com.inventzia.pulse/pulse-data/pom.properties )
+EMBEDDED_PD="$(sed -n 's/^version=//p' "$CHECK_DIR/META-INF/maven/com.inventzia.pulse/pulse-data/pom.properties" | head -1)"
+if [[ "$EMBEDDED_PD" != "$EXPECTED_PD" ]]; then
+    echo "ERROR: runtime jar embeds pulse-data descriptor '$EMBEDDED_PD' but the build resolves '$EXPECTED_PD'." >&2
+    echo "       Rebuild pulse-data with 'mvn -f <pulse-data>/pom.xml clean install' (stale target/ metadata)." >&2
+    exit 1
+fi
+
 mkdir -p "$DEST_DIR"
 cp "$SHADED" "$DEST_JAR"
 echo "==> Staged $(basename "$SHADED") -> $DEST_JAR ($(du -h "$DEST_JAR" | cut -f1))"
