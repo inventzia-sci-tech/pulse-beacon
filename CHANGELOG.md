@@ -5,7 +5,12 @@ All notable changes to pulse-beacon are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.3] - 2026-09-16
+
+### Added
+
+- **Quickstart in the README** (pip-first onboarding): `pip install`, the JDK 17+ requirement, and
+  one runnable bundled example near the top of the page.
 
 ### Fixed
 
