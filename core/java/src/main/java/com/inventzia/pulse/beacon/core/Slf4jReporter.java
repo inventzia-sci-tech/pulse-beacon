@@ -14,8 +14,10 @@ package com.inventzia.pulse.beacon.core;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Default {@link Reporter} that routes platform messages to SLF4J.
@@ -52,6 +54,23 @@ public final class Slf4jReporter implements Reporter {
 
     private final Map<String, Logger> loggers = new ConcurrentHashMap<>();
 
+    /**
+     * Side observers of the stream (see {@link ReportTap}); normally empty, so the per-message cost is
+     * a single {@code isEmpty()} check. A per-run {@code console.log} attaches one here for the run's
+     * lifetime. Copy-on-write so a message can fan out without a lock while taps attach and detach.
+     */
+    private final List<ReportTap> taps = new CopyOnWriteArrayList<>();
+
+    /** Attach a {@link ReportTap} to receive a copy of every delivered message (ignored if {@code null}). */
+    public void addTap(ReportTap tap) {
+        if (tap != null) taps.add(tap);
+    }
+
+    /** Detach a previously attached {@link ReportTap}. */
+    public void removeTap(ReportTap tap) {
+        taps.remove(tap);
+    }
+
     @Override
     public void report(long timestamp, String source, String message, ReportLevel level) {
         Logger logger = loggers.computeIfAbsent(source, LoggerFactory::getLogger);
@@ -60,6 +79,17 @@ public final class Slf4jReporter implements Reporter {
             case INFO      -> logger.info(message);
             case WARNING   -> logger.warn(message);
             case SEVERE, FATAL -> logger.error(message);
+        }
+        // Fan out to any attached side observers (e.g. a per-run console.log). A tap failure is
+        // isolated: reporting must never fail because an observer did.
+        if (!taps.isEmpty()) {
+            for (ReportTap tap : taps) {
+                try {
+                    tap.onReport(timestamp, source, message, level);
+                } catch (Throwable ignore) {
+                    // a broken tap must not break logging
+                }
+            }
         }
     }
 

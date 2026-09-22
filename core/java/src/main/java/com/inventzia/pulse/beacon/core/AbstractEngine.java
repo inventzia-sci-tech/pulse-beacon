@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -90,6 +91,15 @@ public abstract class AbstractEngine extends AbstractGateway {
      * only reads it; discovery is never triggered as a side effect of an observability call.
      */
     private volatile DatumTypeRegistry typeRegistry;
+
+    /**
+     * Run-lifecycle observers (see {@link RunListener}). An orchestrator attaches one to be told,
+     * on the engine thread, when the run is initialised (before dispatch) and when it terminates.
+     * Copy-on-write so notification iterates without holding a lock and attachment is thread-safe.
+     * The engine holds no other reference to what a listener does: no filesystem, no manifest, no
+     * appender ever crosses this boundary — only the two lifecycle facts.
+     */
+    private final List<RunListener> runListeners = new CopyOnWriteArrayList<>();
 
     /**
      * Used in REAL_TIME mode instead of the TimeMachine.
@@ -164,6 +174,45 @@ public abstract class AbstractEngine extends AbstractGateway {
                 .toList();
         return new RunInfo(operatingMode(), startTime(), endTime(),
                 registry.fingerprint(), providerIds);
+    }
+
+    /**
+     * Attaches a {@link RunListener} to be notified, on the engine thread, when this run is
+     * initialised (before dispatch) and when it terminates. Attach before {@link #run()}; a listener
+     * attached after initialisation misses {@link RunListener#onRunInitialized}. Intended for run
+     * orchestration (recording, manifests, telemetry); the engine itself remains oblivious to what
+     * the listener does.
+     *
+     * @param listener the observer to attach (ignored if {@code null})
+     */
+    public void addRunListener(RunListener listener) {
+        if (listener != null) {
+            runListeners.add(listener);
+        }
+    }
+
+    /** Fires {@link RunListener#onRunInitialized} on every listener, isolating and logging faults. */
+    private void notifyRunInitialized() {
+        if (runListeners.isEmpty()) return;
+        RunInfo info = runInfo();
+        for (RunListener l : runListeners) {
+            try {
+                l.onRunInitialized(info);
+            } catch (Exception ex) {
+                log.severe("run listener threw in onRunInitialized; isolating and continuing", ex);
+            }
+        }
+    }
+
+    /** Fires {@link RunListener#onRunTerminated} on every listener, isolating and logging faults. */
+    private void notifyRunTerminated(RunOutcome outcome) {
+        for (RunListener l : runListeners) {
+            try {
+                l.onRunTerminated(outcome);
+            } catch (Exception ex) {
+                log.severe("run listener threw in onRunTerminated; isolating and continuing", ex);
+            }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -442,8 +491,16 @@ public abstract class AbstractEngine extends AbstractGateway {
      */
     @Override
     public void run() {
+        // Terminal outcome is reported to run listeners exactly once, from the finally block, so it
+        // fires in every exit path (clean completion, failure, interruption) without duplication. The
+        // failure path records the error here and still rethrows below; the finally runs first.
+        Throwable terminalError = null;
+        boolean terminalInterrupt = false;
         try {
             initialize();
+            // Mode and the datum-type universe are now fixed; announce the run to listeners before any
+            // event is dispatched, so a recorder opens with the engine's authoritative RunInfo.
+            notifyRunInitialized();
             connect();
             setStatus(GatewayStatus.STARTED);
 
@@ -479,13 +536,19 @@ public abstract class AbstractEngine extends AbstractGateway {
             setStatus(GatewayStatus.COMPLETE);
 
         } catch (InterruptedException e) {
+            terminalInterrupt = true;
             Thread.currentThread().interrupt();
             abortCleanup();
             setStatus(GatewayStatus.STOPPED);
         } catch (Exception e) {
+            terminalError = e;
             abortCleanup();
             setStatus(GatewayStatus.STOPPED);
             throw new RuntimeException("Engine terminated with error", e);
+        } finally {
+            // Publish the engine's own terminal outcome (never the recorder's). Runs before the
+            // failure path's rethrow propagates, so listeners always see the outcome exactly once.
+            notifyRunTerminated(new RunOutcome(status(), terminalError, terminalInterrupt));
         }
     }
 

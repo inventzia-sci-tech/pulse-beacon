@@ -14,6 +14,8 @@ import com.inventzia.pulse.beacon.core.OperatingMode;
 import com.inventzia.pulse.beacon.core.RunInfo;
 import com.inventzia.pulse.beacon.core.Slf4jReporter;
 import com.inventzia.pulse.beacon.core.Topic;
+import com.inventzia.pulse.beacon.core.run.RunLayout;
+import com.inventzia.pulse.beacon.core.run.RunRecording;
 import com.inventzia.pulse.data.datum.Datum;
 import com.inventzia.pulse.ext.schemas.ExtendedBar;
 
@@ -189,26 +191,47 @@ final class ExtendedBarRun {
         engine.registerPublisher(feed, bars, List.of(SYMB));
         engine.registerActor(consumer, Map.of(bars, List.of(SYMB)), Map.of());
 
-        Thread engineThread = new Thread(engine, "engine");
-        engineThread.start();
-        awaitStarted(engine, 2_000);
-        Thread feedThread = new Thread(feed, "bar-feed");
-        feedThread.start();
+        String app = realTime ? "RealTimeExtendedBarExample" : "HistoricExtendedBarExample";
+        List<String> received;
+        boolean ok;
+        RunInfo info;
 
-        engineThread.join(20_000);
-        feedThread.join(2_000);
+        // Record the run into the standardized output layout ($PULSE_OUTPUT/<tier>/<app>/<runId>/):
+        // run.json + events.jsonl + console.log. The engine is untouched — RunRecording attaches as a
+        // run listener and drives everything from the engine's own lifecycle. try-with-resources so an
+        // exceptional exit still finalizes the manifest and releases the recorder and console.
+        try (RunRecording run = RunRecording.start(app, engine, start, end,
+                "engine:" + engine.name(), 1 << 16, null)) {
+            // Record the bar route (the recorder is the sole subscriber sink on it — Stage A).
+            run.recordRoute(engine, bars, List.of(SYMB));
 
-        // Observer surface: what the run did, including the discovered providers. Actors never
-        // see this; a strategy cannot tell replay from live.
-        RunInfo info = engine.runInfo();
-        List<String> received = consumer.received();
-        boolean ok = engine.status() == GatewayStatus.COMPLETE && received.equals(expected(times));
+            // Run the engine and the source on run-scoped threads, so their logs are captured into
+            // this run's console.log (isolated by run id via the MDC).
+            Thread engineThread = run.scoped(engine, "engine");
+            engineThread.start();
+            awaitStarted(engine, 2_000);
+            Thread feedThread = run.scoped(feed, "bar-feed");
+            feedThread.start();
 
-        LOG.info("mode=" + info.mode()
-                + " window=[" + info.startTime() + ".." + info.endTime() + "]"
-                + " typeFingerprint=" + info.typeFingerprint()
-                + " providers=" + info.providerIds()
-                + " status=" + engine.status() + "; received " + received.size() + " bars");
+            engineThread.join(20_000);
+            feedThread.join(2_000);
+
+            // Observer surface: what the run did, including the discovered providers. Actors never
+            // see this; a strategy cannot tell replay from live.
+            info = engine.runInfo();
+            received = consumer.received();
+            ok = engine.status() == GatewayStatus.COMPLETE && received.equals(expected(times));
+
+            LOG.info("mode=" + info.mode()
+                    + " window=[" + info.startTime() + ".." + info.endTime() + "]"
+                    + " typeFingerprint=" + info.typeFingerprint()
+                    + " providers=" + info.providerIds()
+                    + " status=" + engine.status() + "; received " + received.size() + " bars");
+
+            RunLayout.RunPaths paths = run.paths();
+            System.out.println("run output: " + (paths == null ? "(not created)" : paths.dir()));
+        }
+
         for (String r : received) {
             System.out.println("   " + r);
         }
