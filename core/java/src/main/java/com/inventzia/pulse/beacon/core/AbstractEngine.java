@@ -13,6 +13,7 @@ package com.inventzia.pulse.beacon.core;
 
 import com.inventzia.pulse.data.datum.Datum;
 import com.inventzia.pulse.data.datum.DatumTypeRegistry;
+import com.inventzia.pulse.data.schemas.platform.EngineStatus;
 
 import java.util.HashSet;
 import java.util.List;
@@ -188,6 +189,65 @@ public abstract class AbstractEngine extends AbstractGateway {
     public void addRunListener(RunListener listener) {
         if (listener != null) {
             runListeners.add(listener);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Status as events: the run's own lifecycle, on a topic
+    // ------------------------------------------------------------------
+
+    /** Topic carrying {@link EngineStatus}: the lifecycle of the engine and its gateways. */
+    public static final Topic<EngineStatus> STATUS_TOPIC =
+            new Topic<>("engine.status", EngineStatus.class);
+
+    /**
+     * The single routing key every status event carries. One key rather than one per component, so
+     * a subscriber observes the whole run's lifecycle from a single registration; which component
+     * changed travels in the payload.
+     */
+    public static final String STATUS_KEY = "STATUS";
+
+    /**
+     * Publish this component's lifecycle transitions as {@link EngineStatus} events on
+     * {@link #STATUS_TOPIC}, for the engine itself and for every gateway passed here.
+     *
+     * <p>Call before {@code run()}. Attaching a gateway that has already changed status does not
+     * replay what it missed.
+     *
+     * @param gateways gateways whose transitions to publish alongside the engine's
+     */
+    public final void publishStatusEvents(Gateway... gateways) {
+        addStatusListener(this::emitStatus);
+        for (Gateway g : gateways) {
+            if (g instanceof AbstractGateway ag && ag != this) {
+                ag.addStatusListener(this::emitStatus);
+            }
+        }
+    }
+
+    /**
+     * Deliver one status change to the status topic's subscriber, <em>directly</em> rather than
+     * through the TimeMachine.
+     *
+     * <p>This is the control plane, and routing it like data would lose most of it. The first
+     * transitions happen before {@code startUpDone} opens the dispatch barrier, so a queued status
+     * event would be discarded; the last happen after the dispatch loop has returned, so there
+     * would be nothing left to carry them. Bypassing the queue also keeps a wall-clock-stamped
+     * lifecycle fact from colliding with {@link #publish}'s causality check during a compressed-time
+     * replay, where "now" precedes the simulation clock.
+     */
+    private void emitStatus(String component, GatewayStatus from, GatewayStatus to, long atMillis) {
+        Gateway sub = subscriberForKey(STATUS_TOPIC, STATUS_KEY);
+        if (sub == null || sub == this) {
+            return;                       // nobody is listening; building the event would be waste
+        }
+        try {
+            EngineStatus event = new EngineStatus(
+                    STATUS_KEY, component, atMillis, String.valueOf(from), String.valueOf(to));
+            sub.onEvent(STATUS_TOPIC, event);
+        } catch (RuntimeException ex) {
+            // Never let observation disturb the run it is observing.
+            log.severe("failed to publish status event for " + component + ": " + ex);
         }
     }
 

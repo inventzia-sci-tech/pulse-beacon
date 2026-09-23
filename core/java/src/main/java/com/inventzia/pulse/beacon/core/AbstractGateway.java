@@ -18,6 +18,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Base implementation of {@link Gateway}.
@@ -142,6 +143,9 @@ public abstract class AbstractGateway implements Gateway {
 
     private boolean autodisconnectWhenNoMorePublishers = false;
     private boolean unregisterAllOnDisconnect          = true;
+
+    /** Lifecycle observers (see {@link StatusListener}); copy-on-write, so notifying never blocks. */
+    private final List<StatusListener> statusListeners = new CopyOnWriteArrayList<>();
 
     /** This gateway's logging handle, bound to its name. */
     protected final ComponentReporter log;
@@ -405,6 +409,34 @@ public abstract class AbstractGateway implements Gateway {
         GatewayStatus previous = this.status;
         this.status = newStatus;
         log.info("status " + previous + " → " + newStatus);
+        notifyStatusListeners(previous, newStatus);
+    }
+
+    /**
+     * Attach a {@link StatusListener} to this component's lifecycle transitions. Used by the engine
+     * to republish its own and its gateways' status changes as events; see {@link StatusListener}.
+     *
+     * @param listener the observer to add
+     */
+    public final void addStatusListener(StatusListener listener) {
+        if (listener != null) {
+            statusListeners.add(listener);
+        }
+    }
+
+    /** Fires every listener, isolating and logging faults so one cannot disturb the component. */
+    private void notifyStatusListeners(GatewayStatus previous, GatewayStatus current) {
+        if (statusListeners.isEmpty()) {
+            return;
+        }
+        long at = System.currentTimeMillis();
+        for (StatusListener l : statusListeners) {
+            try {
+                l.onStatusChanged(name(), previous, current, at);
+            } catch (RuntimeException ex) {
+                log.severe("status listener threw; isolating and continuing: " + ex);
+            }
+        }
     }
 
     /**

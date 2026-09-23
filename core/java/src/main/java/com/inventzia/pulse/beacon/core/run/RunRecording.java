@@ -12,6 +12,7 @@
 package com.inventzia.pulse.beacon.core.run;
 
 import com.inventzia.pulse.beacon.core.AbstractEngine;
+import com.inventzia.pulse.beacon.core.Gateway;
 import com.inventzia.pulse.beacon.core.RunInfo;
 import com.inventzia.pulse.beacon.core.RunListener;
 import com.inventzia.pulse.beacon.core.RunOutcome;
@@ -132,6 +133,21 @@ public final class RunRecording implements RunListener, AutoCloseable {
     public void recordRoute(AbstractEngine engine, Topic<?> topic, List<String> keys) {
         engine.registerSubscriber(recorder, topic, keys);
         routes.add(topic.name());
+    }
+
+    /**
+     * Record the run's lifecycle alongside its data: register the recorder on the engine's status
+     * topic and ask the engine to publish its own and {@code gateways}' transitions there.
+     *
+     * <p>Status arrives as ordinary events, so it needs no special handling anywhere downstream —
+     * it sorts, filters and follows exactly like the data around it.
+     *
+     * @param engine   the engine to observe
+     * @param gateways gateways whose transitions to record alongside the engine's
+     */
+    public void recordStatus(AbstractEngine engine, Gateway... gateways) {
+        recordRoute(engine, AbstractEngine.STATUS_TOPIC, List.of(AbstractEngine.STATUS_KEY));
+        engine.publishStatusEvents(gateways);
     }
 
     /**
