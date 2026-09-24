@@ -5,6 +5,24 @@ producers and consumers. It provides the infrastructure layer (engine, time mach
 actor base classes) with no domain-specific vocabulary in its core. Algo-trading strategies, IoT
 pipelines, or any other application domain sit on top of it.
 
+## Part of the Inventzia Pulse ecosystem
+
+Pulse provides typed events, an event-driven engine for replay, simulation and real-time
+applications, and desktop tools for inspecting recorded runs. Use the components you need.
+
+| Package | Purpose | Choose it when… |
+| --- | --- | --- |
+| [`pulse-data`](https://pypi.org/project/pulse-data/) | Shared typed events, schemas and serialization for Python and Java | You need Pulse data types or want to define extensions |
+| [`pulse-beacon`](https://pypi.org/project/pulse-beacon/) | Event-driven execution with Python/Java interoperability and run recording | You want to build and run an application |
+| [`pulse-viewers`](https://pypi.org/project/pulse-viewers/) | Desktop tools for browsing runs and inspecting recorded events | You want to examine or follow a recording |
+
+Beacon depends on Data; Viewers reads Beacon's recorded files and can run independently, including on
+another machine — which is why Data and Beacon release together on one version while Viewers versions
+on its own.
+
+**New to Pulse?** The [ecosystem overview](https://github.com/inventzia-sci-tech/pulse-beacon/blob/main/docs/pulse-ecosystem.md)
+has a quickstart that runs an example and opens its recording.
+
 ## Quickstart
 
 ```bash
@@ -33,6 +51,41 @@ time machine and delivers them to Python actors: the whole cross-language path i
 variants, and
 [`examples/pulse-ext-example`](https://github.com/inventzia-sci-tech/pulse-beacon/tree/main/examples/pulse-ext-example/)
 for adding your own datum type.
+
+### Watch a run as it happens
+
+`pulse-echo-example` runs a real-time example for three minutes and records itself. It **blocks for
+the whole run**, so watching it live takes **two terminals** — the point is to open the recording
+while it is still being written.
+
+```bash
+# Terminal 1 — produce a run: 5s + 18s heartbeats, an echo, and the engine's own lifecycle
+pulse-echo-example 180 ~/PulseOut
+```
+
+```bash
+# Terminal 2 — watch it, pointed at the same output root
+pip install pulse-viewers
+pulse-events-viewer --root ~/PulseOut
+```
+
+The run appears in the browser immediately, marked `running`; open it and the viewer follows it live,
+taking up events as they are written and stopping by itself when the run ends.
+
+## Installing the other components
+
+```bash
+# Build and run applications from Python; installs pulse-data too.
+# Requires Java 17+.
+pip install "pulse-beacon[jpype]"
+
+# Inspect recordings on a desktop; no Java required.
+pip install pulse-viewers
+pulse-events-viewer
+
+# Use only the shared event types and serialization.
+pip install pulse-data
+```
 
 ## Mission
 

@@ -63,8 +63,15 @@ jpype = ["jpype1>=1.5"]
 # Java-host direction: the JVM boots CPython via JEP (native, platform-specific build).
 jep = ["jep==4.2.2"]  # pinned to the Maven Central version so compile and runtime match (see pom)
 
+# A runnable demo that produces a real recording, so the documented quickstart needs no classpath
+# incantation. Requires the [jpype] extra and a JDK 17+; it fails with a readable message otherwise.
+[project.scripts]
+pulse-echo-example = "inventzia.pulse.beacon.core.examples.realtime_echo_run:main"
+
 [project.urls]
 Homepage = "https://inventzia.com"
+"Pulse ecosystem" = "https://github.com/inventzia-sci-tech/pulse-beacon/blob/main/docs/pulse-ecosystem.md"
+Documentation = "https://github.com/inventzia-sci-tech/pulse-beacon#readme"
 Repository = "https://github.com/inventzia-sci-tech/pulse-beacon"
 Changelog = "https://github.com/inventzia-sci-tech/pulse-beacon/blob/main/CHANGELOG.md"
 

@@ -5,7 +5,80 @@ All notable changes to pulse-beacon are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] - 2026-09-24
+
+### Added
+
+- **Run recording (Stage A): a run can write itself to a standardized output layout.** Recording is
+  opt-in — a launcher wires in `RunRecording`, existing applications are unaffected — and a run so
+  configured produces `$PULSE_OUTPUT/{historical|live}/<app>/<runId>/` containing `run.json`
+  (manifest), `events.jsonl` (the recording) and `console.log` (that run's own log). The engine gained only
+  observation hooks — `RunListener` / `RunOutcome`, and a `ReportTap` on `Slf4jReporter` so a per-run
+  console can be captured without compiling the engine against Logback. Everything about
+  directories, manifests and appenders lives launcher-side in
+  `com.inventzia.pulse.beacon.core.run` (`RunLayout`, `RunConsole`, `RunRecording`) with
+  `EventRecorderGateway` under `gateway.recording`.
+
+  The manifest keeps the **engine outcome (`runStatus`) and the recording outcome
+  (`recordingStatus`) separate**, because either can fail while the other succeeds, and carries
+  counts that always balance (`observed = events + overflow + serializationErrors + abandoned`) so a
+  lossy or failed recording can never be mistaken for a complete one. Stage A's limits —
+  selected-routes capture, recorder-local sequence — are declared in the manifest's `recording`
+  descriptor rather than left implicit. The all-routes engine tap with a global dispatch sequence is
+  Stage B.
+
+- **A run's lifecycle is published as events.** `AbstractGateway` gained a `StatusListener` seam on
+  its single `setStatus` choke point, and `AbstractEngine.publishStatusEvents(...)` relays its own
+  and its gateways' transitions onto `engine.status` as `EngineStatus` events;
+  `RunRecording.recordStatus(...)` wires recorder and publisher in one call.
+
+  Status is delivered **directly to the topic's subscriber rather than through the TimeMachine**,
+  deliberately: the first transitions happen before the dispatch barrier opens and the last after
+  the dispatch loop has returned, so a queued status event would lose both ends of the run and keep
+  only the quiet middle. It also keeps a wall-clock lifecycle fact from colliding with the causality
+  check during a compressed-time replay.
+
+- **`RealTimeEchoExample`**, a long real-time run built to be watched: 5-second and 18-second
+  heartbeats, an `EchoConsumer` publishing a derived event back into the stream, and its own
+  lifecycle recorded alongside. Runnable from an installed wheel as the console script
+  **`pulse-echo-example [seconds] [outputRoot]`** (needs the `[jpype]` extra and a JDK 17+), so the
+  documented quickstart needs no classpath incantation.
+
+### Fixed
+
+- **A busy recording is no longer invisible until its buffer fills.** The writer flushed only when
+  its queue went idle, which a steady stream never reaches, so events sat buffered until 8 KB had
+  accumulated — dozens of events of latency for anything following the recording. Buffered events
+  are now also flushed every `DEFAULT_FLUSH_INTERVAL_MILLIS` (250 ms), tunable with
+  `setFlushIntervalMillis` (0 flushes per record). Idle behaviour is unchanged.
+
+- **A wedged recorder can no longer hang a run.** `RunRecording` bounds the drain: if the writer
+  ignores its stop request the join gives up, interrupts, and finalization proceeds, recording
+  `recordingStatus: "unknown"` rather than guessing. A writer that does stop on interruption is
+  reported as `"interrupted"` — "I don't know what the recording contains" and "it was cut short"
+  are different facts.
+
+- **A recording that fails to start is no longer silent.** If the run directory cannot be prepared
+  (unwritable output root, full disk) the run still continues — an observer must never take down
+  what it observes — but it now logs the reason and the resolved root, and exposes `isRecording()`,
+  `startupFailure()` and `requireRecording()`. Whether an unrecorded run is acceptable is the
+  launcher's call, so the library makes the failure loud and leaves the verdict to the caller.
+
+### Known limitations — recording (Stage A)
+
+Recording ships deliberately incomplete, and a reader must not assume otherwise. Both limits are
+declared in every `run.json` under `recording`, so a consumer can detect them rather than infer them:
+
+- **Selected routes, not the whole engine.** The recorder is a *subscriber sink*, and Beacon routing
+  is one subscriber per `(topic, key)`, so it records only routes it was explicitly registered on and
+  only routes that have no other sink. A recording is therefore a chosen subset of the run, never
+  automatically the complete dispatch stream. Declared as `"capture": "selected-routes"`.
+- **Recorder-local sequence numbers.** `seq` is the order *this recorder* received events on *its*
+  routes — not the engine's global dispatch sequence. Sequence numbers are comparable within one
+  recording and must not be read as positions in the engine's overall ordering. Declared as
+  `"sequence": "recorder-local"`.
+
+Both are lifted by the engine event tap (Stage B), which is not in this release.
 
 ### Changed
 

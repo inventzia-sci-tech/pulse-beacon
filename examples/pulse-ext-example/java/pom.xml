@@ -28,7 +28,7 @@
         <dependency>
             <groupId>com.inventzia.pulse</groupId>
             <artifactId>pulse-data</artifactId>
-            <version>0.3.0-SNAPSHOT</version>
+            <version>0.3.0</version>
             <scope>provided</scope>
         </dependency>
         <!-- Generated records use Jackson annotations (compile-only via pulse-data). -->
@@ -48,7 +48,7 @@
         <dependency>
             <groupId>com.inventzia.pulse</groupId>
             <artifactId>pulse-beacon-core</artifactId>
-            <version>0.3.0-SNAPSHOT</version>
+            <version>0.3.0</version>
             <scope>provided</scope>
         </dependency>
     </dependencies>
