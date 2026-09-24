@@ -58,7 +58,14 @@ import java.util.concurrent.atomic.AtomicLong;
  * in the trailer ({@code observed = events + overflow + serializationErrors + abandoned}), so a failed
  * or lossy recording never looks complete.
  */
-public final class EventRecorderGateway extends AbstractGateway {
+/*
+ * Not final, and deliberately so: {@link com.inventzia.pulse.beacon.core.run.RunRecording} accepts a
+ * recorder instance, and the failure paths that matter most cannot be provoked from outside one. A
+ * recorder that ignores its stop request, or that fails at a chosen moment, has to be substituted —
+ * there is no way to wedge the real writer thread on demand through its public surface. Subclassing
+ * is for that substitution; production code uses this class as it stands.
+ */
+public class EventRecorderGateway extends AbstractGateway {
 
     /** Recording envelope version; travels on every record and gates the reader. */
     public static final int ENVELOPE_VERSION = 1;

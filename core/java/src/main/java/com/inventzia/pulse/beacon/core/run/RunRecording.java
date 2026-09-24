@@ -78,12 +78,12 @@ public final class RunRecording implements RunListener, AutoCloseable {
     private volatile Thread recorderThread;       // owned; started at onRunInitialized
 
     private RunRecording(String app, String runId, String source, Path root,
-                         long startTime, long endTime, int capacity) {
+                         EventRecorderGateway recorder) {
         this.app    = app;
         this.runId  = runId;
         this.source = source;
         this.root   = root;
-        this.recorder = new EventRecorderGateway(app + "-recorder", runId, startTime, endTime, capacity);
+        this.recorder = recorder;
     }
 
     /**
@@ -103,9 +103,31 @@ public final class RunRecording implements RunListener, AutoCloseable {
     public static RunRecording start(String app, AbstractEngine engine, long startTime, long endTime,
                                      String source, int capacity, Path root) {
         Objects.requireNonNull(app, "app");
-        Objects.requireNonNull(engine, "engine");
         String runId = RunLayout.newRunId();
-        RunRecording rr = new RunRecording(app, runId, source, root, startTime, endTime, capacity);
+        return startWith(app, engine, source, root,
+                new EventRecorderGateway(app + "-recorder", runId, startTime, endTime, capacity),
+                runId);
+    }
+
+    /**
+     * Begin recording with a caller-supplied recorder, for tests that need one which misbehaves on
+     * purpose.
+     *
+     * <p>The failure paths worth pinning here — a recorder that ignores {@code requestStop()} and has
+     * to be interrupted, one that fails at a chosen moment — cannot be provoked through a real
+     * recorder's public surface, so the recorder has to be substituted. Package-private: production
+     * callers use {@link #start}, which builds its own.
+     *
+     * @param recorder the recorder to own and drive
+     * @param runId    the run id the recorder was constructed with; they must agree, since it names
+     *                 the run directory and is stamped on every record
+     */
+    static RunRecording startWith(String app, AbstractEngine engine, String source, Path root,
+                                  EventRecorderGateway recorder, String runId) {
+        Objects.requireNonNull(app, "app");
+        Objects.requireNonNull(engine, "engine");
+        Objects.requireNonNull(recorder, "recorder");
+        RunRecording rr = new RunRecording(app, runId, source, root, recorder);
         engine.addRunListener(rr);
         return rr;
     }
