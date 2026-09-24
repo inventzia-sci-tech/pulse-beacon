@@ -12,10 +12,12 @@
 package com.inventzia.pulse.beacon.core.run;
 
 import com.inventzia.pulse.beacon.core.AbstractEngine;
+import com.inventzia.pulse.beacon.core.ComponentReporter;
 import com.inventzia.pulse.beacon.core.Gateway;
 import com.inventzia.pulse.beacon.core.RunInfo;
 import com.inventzia.pulse.beacon.core.RunListener;
 import com.inventzia.pulse.beacon.core.RunOutcome;
+import com.inventzia.pulse.beacon.core.Slf4jReporter;
 import com.inventzia.pulse.beacon.core.Topic;
 import com.inventzia.pulse.beacon.core.gateway.recording.EventRecorderGateway;
 
@@ -61,6 +63,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public final class RunRecording implements RunListener, AutoCloseable {
 
+    /** Reports recording-level problems; the engine and gateways have their own. */
+    private static final ComponentReporter log =
+            new ComponentReporter("RunRecording", Slf4jReporter.shared());
+
     /** Bounded time to wait for the recorder's writer thread to drain and close at shutdown. */
     private static final long DRAIN_TIMEOUT_MILLIS = 5_000L;
 
@@ -73,7 +79,8 @@ public final class RunRecording implements RunListener, AutoCloseable {
 
     private final AtomicBoolean finalized = new AtomicBoolean(false);
 
-    private volatile RunLayout.RunPaths paths;   // set at onRunInitialized
+    private volatile RunLayout.RunPaths paths;   // set at onRunInitialized; null if it failed
+    private volatile Throwable startupFailure;    // why recording never started, if it did not
     private volatile RunConsole console;          // set at onRunInitialized
     private volatile Thread recorderThread;       // owned; started at onRunInitialized
 
@@ -201,15 +208,64 @@ public final class RunRecording implements RunListener, AutoCloseable {
         recording.put("envelopeVersion", EventRecorderGateway.ENVELOPE_VERSION);
         recording.put("routes", new ArrayList<>(routes));
 
-        this.paths = RunLayout.createRun(root, info.mode(), app, runId, source,
-                new long[]{info.startTime(), info.endTime()},
-                info.typeFingerprint(), info.providerIds(), recording);
+        try {
+            this.paths = RunLayout.createRun(root, info.mode(), app, runId, source,
+                    new long[]{info.startTime(), info.endTime()},
+                    info.typeFingerprint(), info.providerIds(), recording);
 
-        // Per-run console capture, then the recorder's writer thread (owned here).
-        this.console = RunConsole.attach(runId, paths.console());
-        recorder.configure(paths.events(), info);
-        this.recorderThread = scoped(recorder, app + "-recorder-io");
-        this.recorderThread.start();
+            // Per-run console capture, then the recorder's writer thread (owned here).
+            this.console = RunConsole.attach(runId, paths.console());
+            recorder.configure(paths.events(), info);
+            this.recorderThread = scoped(recorder, app + "-recorder-io");
+            this.recorderThread.start();
+        } catch (Throwable t) {
+            // Setting up the recording failed — an unwritable output root, a full disk. The run
+            // itself is unaffected and continues: an observer must never take down what it observes,
+            // and killing a live run because a disk is full is usually worse than losing its
+            // recording. But it must not be *silent* either: the launcher asked to record and is
+            // getting nothing, so say so here rather than leaving it to the engine's generic
+            // "listener threw" line, and let the launcher decide via requireRecording().
+            this.startupFailure = t;
+            this.paths = null;
+            log.severe("recording disabled for run " + runId + ": could not prepare the run directory"
+                    + " under " + RunLayout.outputRoot(root)
+                    + " — the run continues UNRECORDED (" + t + ")");
+        }
+    }
+
+    /**
+     * Why recording could not be set up, or {@code null} if it started normally.
+     *
+     * <p>Available once the engine has initialised; before that it is always {@code null}.
+     */
+    public Throwable startupFailure() {
+        return startupFailure;
+    }
+
+    /** Whether this run is actually being recorded. False if its directory could not be prepared. */
+    public boolean isRecording() {
+        return paths != null;
+    }
+
+    /**
+     * Throw if the recording did not start, for a launcher that would rather abort than produce an
+     * unrecorded run — an audited replay, say, where the artifact is the point.
+     *
+     * <p>Call from the launcher thread after the engine has started. Left to the caller because the
+     * trade-off is the caller's: a live trading run is usually better off continuing unrecorded than
+     * being killed by a full disk, and a compliance replay is usually not.
+     *
+     * @throws IllegalStateException if recording is not active
+     */
+    public void requireRecording() {
+        if (paths == null) {
+            throw new IllegalStateException(
+                    "run " + runId + " is not being recorded"
+                    + (startupFailure == null
+                       ? " (the engine has not initialised yet)"
+                       : ": " + startupFailure),
+                    startupFailure);
+        }
     }
 
     @Override

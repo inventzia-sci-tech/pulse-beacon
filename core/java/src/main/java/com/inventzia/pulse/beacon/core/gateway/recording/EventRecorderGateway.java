@@ -34,7 +34,7 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * A sink gateway that records each dispatched event as a versioned JSONL envelope (see
- * {@code New/pulse-viewer/schema/event-record.schema.json}), for the Pulse Events Viewer.
+ * the {@code event-record} JSON Schema shipped with pulse-viewers), for the Pulse Events Viewer.
  *
  * <p><b>Ownership.</b> This gateway does not manage its own lifecycle thread. Its owner ({@link
  * com.inventzia.pulse.beacon.core.run.RunRecording}) calls {@link #configure} with the run's file and
@@ -57,18 +57,33 @@ import java.util.concurrent.atomic.AtomicLong;
  * and skipped; a disk failure fails the recorder without failing the run. Every event is accounted for
  * in the trailer ({@code observed = events + overflow + serializationErrors + abandoned}), so a failed
  * or lossy recording never looks complete.
- */
-/*
- * Not final, and deliberately so: {@link com.inventzia.pulse.beacon.core.run.RunRecording} accepts a
- * recorder instance, and the failure paths that matter most cannot be provoked from outside one. A
- * recorder that ignores its stop request, or that fails at a chosen moment, has to be substituted —
+ *
+ * <p><b>Flush cadence.</b> An idle stream is flushed as soon as the writer finds nothing to do, so a
+ * quiet live run appears promptly. A busy one never reaches that point, so buffered events are also
+ * flushed every {@link #DEFAULT_FLUSH_INTERVAL_MILLIS} — otherwise they would sit in the writer's
+ * buffer until it filled, invisible to anything following the recording for as long as that took.
+ * Tune with {@link #setFlushIntervalMillis}.
+ *
+ * <p><b>Not final, deliberately.</b> {@link com.inventzia.pulse.beacon.core.run.RunRecording} accepts
+ * a recorder instance, and the failure paths that matter most cannot be provoked from outside one: a
+ * recorder that ignores its stop request, or fails at a chosen moment, has to be substituted, and
  * there is no way to wedge the real writer thread on demand through its public surface. Subclassing
- * is for that substitution; production code uses this class as it stands.
+ * serves that substitution; production code uses this class as it stands.
  */
 public class EventRecorderGateway extends AbstractGateway {
 
     /** Recording envelope version; travels on every record and gates the reader. */
     public static final int ENVELOPE_VERSION = 1;
+
+    /**
+     * How long events may sit in the writer's buffer before being flushed, while a stream is busy
+     * enough that the writer never goes idle. Bounds how far behind a viewer following the recording
+     * can be; an idle stream is flushed immediately regardless.
+     *
+     * <p>250 ms is chosen to be imperceptible to someone watching a run without costing a flush per
+     * event during a compressed-time replay, where events arrive as fast as they can be merged.
+     */
+    public static final long DEFAULT_FLUSH_INTERVAL_MILLIS = 250L;
 
     /** A stable snapshot of the recorder's counters, read after the writer thread has terminated. */
     public record Counts(long observed, long events, long overflow,
@@ -86,6 +101,7 @@ public class EventRecorderGateway extends AbstractGateway {
 
     private volatile Path    filePath;      // set by configure()
     private volatile RunInfo headerInfo;    // set by configure()
+    private volatile long    flushIntervalMillis = DEFAULT_FLUSH_INTERVAL_MILLIS;
     private volatile boolean started     = false;
     private volatile boolean stopping    = false;
     private volatile boolean failed      = false;
@@ -130,6 +146,18 @@ public class EventRecorderGateway extends AbstractGateway {
     /** Ask the writer thread to finish: stop accepting, drain what is queued, write the trailer, close. */
     public void requestStop() {
         stopping = true;
+    }
+
+    /**
+     * How long events may sit buffered while the stream is busy. Call before {@link #run()}.
+     *
+     * @param millis the bound; {@code 0} or less flushes every record, at the cost of a write
+     *               syscall per event
+     * @throws IllegalStateException if the writer thread has already started
+     */
+    public synchronized void setFlushIntervalMillis(long millis) {
+        if (started) throw new IllegalStateException(name() + ": already started");
+        this.flushIntervalMillis = millis;
     }
 
     /** @return a stable counter snapshot; meaningful once the writer thread has terminated. */
@@ -179,12 +207,24 @@ public class EventRecorderGateway extends AbstractGateway {
     }
 
     private void drain() throws InterruptedException {
+        long lastFlush = System.nanoTime();
         while (true) {
             Rec r = queue.poll(200, TimeUnit.MILLISECONDS);
             if (r != null) {
                 writeEvent(r);             // disk failure here propagates -> run() marks failed
+                // A steady stream never reaches the idle branch below, so without this the events
+                // would sit in the writer's buffer until it filled -- invisible to anything
+                // following the recording, for as long as that took. Flushing on a short timer
+                // bounds that latency while still batching: one flush per interval, not per event.
+                long now = System.nanoTime();
+                if (flushIntervalMillis <= 0
+                        || (now - lastFlush) >= flushIntervalMillis * 1_000_000L) {
+                    flushOrThrow();
+                    lastFlush = now;
+                }
             } else {
-                flushOrThrow();            // timely flush; a flush failure fails the recorder
+                flushOrThrow();            // idle: flush immediately, a quiet stream should not lag
+                lastFlush = System.nanoTime();
                 if (stopping && queue.isEmpty()) return;
             }
         }
