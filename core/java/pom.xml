@@ -73,6 +73,7 @@
         <logback.version>1.5.12</logback.version>
         <junit.version>5.11.4</junit.version>
         <assertj.version>3.27.2</assertj.version>
+        <h2.version>2.3.232</h2.version>
         <pulse-data.version>0.4.0-SNAPSHOT</pulse-data.version>
     </properties>
 
@@ -128,6 +129,20 @@
             <groupId>org.assertj</groupId>
             <artifactId>assertj-core</artifactId>
             <version>${assertj.version}</version>
+            <scope>test</scope>
+        </dependency>
+        <!--
+            An embedded database for the SQL gateway tests. H2 and not SQLite on purpose: SQLite is
+            the counter-example in docs/pulse-sql-gateway.md - it accepts NUMERIC DDL and then stores
+            a decimal as a float, so passing against it would prove nothing about the one guarantee
+            the storage mapping exists to keep. H2 has real DECIMAL, catalogs, schemas and snapshot
+            isolation, so a test that passes here is testing something. It keeps CI fast; only a real
+            production engine proves the guarantees end to end.
+        -->
+        <dependency>
+            <groupId>com.h2database</groupId>
+            <artifactId>h2</artifactId>
+            <version>${h2.version}</version>
             <scope>test</scope>
         </dependency>
     </dependencies>
