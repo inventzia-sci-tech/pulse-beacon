@@ -147,6 +147,15 @@ public abstract class AbstractGateway implements Gateway {
     /** Lifecycle observers (see {@link StatusListener}); copy-on-write, so notifying never blocks. */
     private final List<StatusListener> statusListeners = new CopyOnWriteArrayList<>();
 
+    /** Terminal-failure observers; see {@link FailureListener} for why these are not status listeners. */
+    private final List<FailureListener> failureListeners = new CopyOnWriteArrayList<>();
+
+    /** Guards first-failure-wins; the failure itself is volatile so readers never see a torn record. */
+    private final Object failureLock = new Object();
+
+    private volatile GatewayFailure terminalFailure;
+    private volatile boolean        failureIsFatal = false;
+
     /** This gateway's logging handle, bound to its name. */
     protected final ComponentReporter log;
 
@@ -422,6 +431,81 @@ public abstract class AbstractGateway implements Gateway {
         if (listener != null) {
             statusListeners.add(listener);
         }
+    }
+
+    // ------------------------------------------------------------------
+    // Terminal failure — a channel beside the status, not encoded into it
+    // ------------------------------------------------------------------
+
+    /**
+     * Attach a {@link FailureListener}. The engine attaches itself to every gateway it registers, so
+     * that a gateway dying mid-run is not mistaken for one reaching the end of its stream.
+     *
+     * @param listener the observer to add
+     */
+    public final void addFailureListener(FailureListener listener) {
+        if (listener != null) {
+            failureListeners.add(listener);
+        }
+    }
+
+    /**
+     * Declare whether this gateway failing should end the run.
+     *
+     * <p>Defaults to {@code false}, which preserves the long-standing behaviour: a gateway logs,
+     * disconnects, and the run carries on. That is right for an observational sink, and wrong for a
+     * historical source — a result derived from partial history is worse than no result — so a source
+     * that matters sets this and gets {@code runStatus: failed} instead of a silent half-replay.
+     *
+     * <p>Call before {@code run()}.
+     *
+     * @param fatal whether a terminal failure here should fail the run
+     */
+    public final void setFailureIsFatal(boolean fatal) {
+        this.failureIsFatal = fatal;
+    }
+
+    /** Whether a terminal failure of this gateway ends the run. */
+    public final boolean failureIsFatal() {
+        return failureIsFatal;
+    }
+
+    /**
+     * Record that this gateway has failed terminally, and tell anyone listening.
+     *
+     * <p>Call this <em>in addition to</em> disconnecting, never instead of it: the barrier still has to
+     * be released or the run hangs. What this adds is the fact that the release was a failure.
+     *
+     * <p>Only the first failure is kept. Later ones are logged: once a gateway is dead, subsequent
+     * errors are usually consequences, and the first is the one that explains the run.
+     *
+     * @param detail what it was doing, in terms an operator can act on
+     * @param cause  the underlying exception, or {@code null}
+     */
+    protected final void failTerminally(String detail, Throwable cause) {
+        GatewayFailure failure = new GatewayFailure(
+                name(), detail, cause, System.currentTimeMillis(), failureIsFatal);
+        synchronized (failureLock) {
+            if (terminalFailure != null) {
+                log.severe(name() + ": further failure after it already failed: " + detail);
+                return;
+            }
+            terminalFailure = failure;
+        }
+        log.severe(name() + ": terminal failure" + (failureIsFatal ? " (fatal to the run)" : "")
+                   + ": " + detail);
+        for (FailureListener l : failureListeners) {
+            try {
+                l.onGatewayFailure(failure);
+            } catch (Exception ex) {
+                log.severe(name() + ": failure listener threw; isolating and continuing: " + ex);
+            }
+        }
+    }
+
+    /** The terminal failure of this gateway, or empty if it has not failed. */
+    public final java.util.Optional<GatewayFailure> terminalFailure() {
+        return java.util.Optional.ofNullable(terminalFailure);
     }
 
     /** Fires every listener, isolating and logging faults so one cannot disturb the component. */

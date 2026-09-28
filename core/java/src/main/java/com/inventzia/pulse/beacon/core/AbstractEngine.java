@@ -133,6 +133,20 @@ public abstract class AbstractEngine extends AbstractGateway {
     /** Origins (source gateways) registered high priority — their equal-time events sort first. */
     private final Set<Gateway> highPriorityOrigins = ConcurrentHashMap.newKeySet();
 
+    /** Gateways already being watched for terminal failure, so one listener is attached per gateway. */
+    private final Set<Gateway> watchedForFailure = ConcurrentHashMap.newKeySet();
+
+    /** Terminal gateway failures observed during the run, in the order they were reported. */
+    private final List<GatewayFailure> gatewayFailures = new CopyOnWriteArrayList<>();
+
+    /**
+     * Set when a gateway whose failure is fatal has reported one.
+     *
+     * <p>Checked after the dispatch loop returns rather than encoded into the engine's status: the
+     * loop must still be allowed to unwind normally so the TimeMachine's permits are released.
+     */
+    private volatile boolean abortRequested = false;
+
     // ------------------------------------------------------------------
     // Construction
     // ------------------------------------------------------------------
@@ -433,7 +447,48 @@ public abstract class AbstractEngine extends AbstractGateway {
         // Assign a stable index in registration-call order (the first time this gateway is
         // registered), for the deterministic equal-event-time tie-break.
         originIndex.computeIfAbsent(publisher, g -> nextOriginIndex.getAndIncrement());
+        watchForFailure(publisher);
         super.registerPublisher(publisher, topic, keys);
+    }
+
+    /** Registers a subscriber and watches it for terminal failure. */
+    @Override
+    public synchronized void registerSubscriber(Gateway subscriber, Topic<?> topic, List<String> keys) {
+        watchForFailure(subscriber);
+        super.registerSubscriber(subscriber, topic, keys);
+    }
+
+    /**
+     * Listen for a gateway's terminal failure.
+     *
+     * <p>Attached at registration, so the engine learns the moment a gateway dies rather than
+     * inferring it afterwards from a status that cannot distinguish failure from end-of-stream.
+     * Idempotent: registering the same gateway on several topics attaches one listener.
+     */
+    private void watchForFailure(Gateway gateway) {
+        if (gateway instanceof AbstractGateway ag && ag != this && watchedForFailure.add(gateway)) {
+            ag.addFailureListener(this::onGatewayFailure);
+        }
+    }
+
+    /**
+     * A registered gateway has failed terminally.
+     *
+     * <p>Recorded always, so the outcome can name it. Fatal failures additionally ask the dispatch
+     * loop to stop: the alternative is letting the remaining sources read on into a run that is
+     * already doomed, and producing a result derived from partial history.
+     */
+    private void onGatewayFailure(GatewayFailure failure) {
+        gatewayFailures.add(failure);
+        if (failure.fatal()) {
+            log.severe("gateway '" + failure.gatewayName() + "' failed fatally; aborting the run: "
+                       + failure.detail());
+            abortRequested = true;
+            // Wake a dispatch loop that may be parked on an empty queue. This reuses the ordinary
+            // shutdown signal rather than inventing a second stop path; the abort flag, checked when
+            // the loop returns, is what distinguishes this from a clean end of stream.
+            enqueueShutdown(lastEventTime > 0 ? lastEventTime : endTime());
+        }
     }
 
     /**
@@ -593,6 +648,13 @@ public abstract class AbstractEngine extends AbstractGateway {
             shutDownActors(shutdownTime);
             shutDownGateways(shutdownTime);   // engine-driven sink lifecycle (barrier)
             disconnect();
+
+            // The loop has unwound cleanly and every permit is released; only now is it safe to turn a
+            // fatal gateway failure into a failed run. Doing it earlier would risk leaving a producer
+            // blocked on a write permit forever.
+            if (abortRequested) {
+                throw new GatewayFailedException(fatalFailureSummary());
+            }
             setStatus(GatewayStatus.COMPLETE);
 
         } catch (InterruptedException e) {
@@ -608,7 +670,8 @@ public abstract class AbstractEngine extends AbstractGateway {
         } finally {
             // Publish the engine's own terminal outcome (never the recorder's). Runs before the
             // failure path's rethrow propagates, so listeners always see the outcome exactly once.
-            notifyRunTerminated(new RunOutcome(status(), terminalError, terminalInterrupt));
+            notifyRunTerminated(new RunOutcome(status(), terminalError, terminalInterrupt,
+                    List.copyOf(gatewayFailures)));
         }
     }
 
@@ -819,6 +882,18 @@ public abstract class AbstractEngine extends AbstractGateway {
             }
             case SHUTDOWN -> enqueueShutdown(cmd.eventTime());
         }
+    }
+
+    /** The fatal failures, for the exception that ends the run. */
+    private String fatalFailureSummary() {
+        return gatewayFailures.stream().filter(GatewayFailure::fatal)
+                .map(GatewayFailure::describe)
+                .collect(java.util.stream.Collectors.joining("; "));
+    }
+
+    /** Terminal gateway failures observed so far, fatal or not. */
+    public List<GatewayFailure> gatewayFailures() {
+        return List.copyOf(gatewayFailures);
     }
 
     private void enqueueShutdown(long atTime) {

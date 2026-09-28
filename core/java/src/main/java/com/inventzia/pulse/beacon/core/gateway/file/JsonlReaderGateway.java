@@ -123,6 +123,11 @@ public final class JsonlReaderGateway<P extends Datum> extends AbstractGateway {
             // hanging, with this gateway named in the log.
             log.severe("gateway '" + name() + "' failed reading " + filePath
                     + "; disconnecting so the run can terminate", e);
+            // Disconnecting is also exactly what a healthy reader does at end of file, so on its own
+            // it tells the engine nothing. Reporting the failure is what stops a replay that stopped
+            // halfway from being recorded as a completed run. Whether it ends the run is the
+            // launcher's call, via setFailureIsFatal - see AbstractGateway.
+            failTerminally("failed reading " + filePath, e);
         } finally {
             disconnect();
             setStatus(GatewayStatus.STOPPED);

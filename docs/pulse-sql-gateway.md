@@ -239,29 +239,44 @@ so, and have a persistence failure fail the run. Default observational, declare 
 
 ## 8. A failing source needs an engine contract, not an exception
 
-A historical source that fails mid-replay should fail the run: a result derived from partial history
-is worse than no result. **The current framework cannot express that**, and copying the existing
-pattern would not establish it.
+**Implemented.** A historical source that fails mid-replay should fail the run: a result derived from
+partial history is worse than no result. The framework could not express that, and the mechanism is
+now in place.
 
-`JsonlReaderGateway` catches its own exceptions, logs SEVERE, disconnects and sets itself `STOPPED`
-— deliberately, so the TimeMachine's all-drivers barrier is released rather than hanging the run. But
-the *engine* never learns. Its own execution path did not throw, so it completes normally and the run
-manifest records `runStatus: completed` for a replay that silently stopped halfway. Five tests assert
-`isIn(STOPPED, COMPLETE)` on the engine, which accepts exactly this ambiguity.
+The original problem: `JsonlReaderGateway` catches its own exceptions, logs SEVERE, disconnects and
+sets itself `STOPPED` — deliberately, so the TimeMachine's all-drivers barrier is released rather than
+hanging the run. But the *engine* never learned. Its own execution path did not throw, so it completed
+normally and the run manifest recorded `runStatus: completed` for a replay that silently stopped
+halfway. Nine tests assert `isIn(STOPPED, COMPLETE)` on the engine, which accepts exactly that
+ambiguity.
 
-So this is engine work, not gateway work, and it needs specifying before the source is written:
+The fix is a failure channel carried **beside** the status rather than encoded into it, because
+disconnecting is equally what a healthy gateway does at end of stream — the two can never be told
+apart from the status alone:
 
-- how a source **reports terminal failure** to the engine (a counterpart to `RunListener`, or a
-  failure channel on the gateway contract);
-- how the TimeMachine **barrier is released** without the failure being mistaken for clean
-  end-of-stream — the two are currently indistinguishable;
-- how outstanding reads and other sources are **cancelled**, rather than left to finish into a run
-  that is already doomed;
-- how that surfaces as `runStatus: failed` with the failing gateway named.
+- **Reporting.** `AbstractGateway.failTerminally(detail, cause)` records a `GatewayFailure` and
+  notifies `FailureListener`s. It is called *in addition to* disconnecting, never instead of it. Only
+  the first failure is kept: later ones are usually consequences.
+- **Barrier.** Unchanged, and deliberately so. The gateway still disconnects and still releases the
+  barrier; what is added is the fact that the release was a failure.
+- **Cancellation.** The engine attaches a listener to every gateway at registration. A failure marked
+  fatal sets an abort flag and enqueues the ordinary shutdown signal, so the dispatch loop stops and
+  the remaining sources do not read on into a doomed run. The abort is acted on only *after* the loop
+  has unwound and every TimeMachine permit is released — turning it into a failure earlier risks
+  leaving a producer blocked on a write permit forever.
+- **Surfacing.** `RunOutcome` carries the failures; `runStatus()` returns `failed` and
+  `failedGateways()` names them. `completed()` additionally requires that no gateway failed fatally,
+  so a clean engine path can no longer make a half-finished replay look like a success.
 
-Until that exists, a SQL source can be honest only to the extent the recorder is: report the failure
-in its own accounting and in the manifest. That is strictly weaker than the guarantee wanted, and the
-document should not claim otherwise.
+**Fatality is declared, not assumed.** `setFailureIsFatal(boolean)` defaults to `false`, which
+preserves the long-standing behaviour: the gateway logs, disconnects, and the run carries on. What
+changes unconditionally is that the failure is no longer *invisible* — it is in the outcome either
+way. A historical source whose partial output would be misleading sets the flag and gets
+`runStatus: failed` instead of a silent half-replay.
+
+The nine `isIn(STOPPED, COMPLETE)` assertions are still there. They remain correct — they assert the
+engine terminates rather than hangs — and the ambiguity they tolerate is now resolved by the outcome
+instead of by the status.
 
 ## 9. Where it lives
 
