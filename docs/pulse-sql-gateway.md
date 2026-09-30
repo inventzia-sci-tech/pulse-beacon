@@ -73,6 +73,22 @@ and the first release may require exactly that for simplicity. But the requireme
 the primary key: a declared unique non-null column set is equally valid, and saying a table "cannot
 be replayed" without a primary key overstates the restriction.
 
+**Uniqueness must be verified, not assumed, and non-null is nowhere near sufficient.** If the tuple
+can repeat, keyset paging skips every row after the first at a duplicated value — and does it
+*silently*, because the cursor still advances and no page is ever re-read. Rows vanish from the replay
+with nothing reporting it, which is worse than the hang a non-advancing cursor produces: every
+downstream result still looks perfectly well-formed. So `TableValidator` checks the tuple against the
+declared primary key and unique indexes (a unique key that is a *subset* of the tuple suffices; extra
+columns only refine an order that is already total) and refuses a tuple no constraint covers. As a
+second line of defence the source compares the rows it fetched against the row count it measured at
+startup, and fails rather than report a subset — which also catches a source run without `validate()`.
+
+**The tiebreak is usually not a datum field.** Two events can legitimately share a business key and a
+millisecond — one instrument, several ticks — so the datum's own fields cannot be relied on to be
+unique. `_pulse_ingestion_id` is unique per event by construction and is the recommended final column
+of the tuple. Ordering columns outside the datum are therefore permitted; the binding performs no I/O,
+so the validator is what confirms such a column exists and is non-null.
+
 The same tuple makes keyset pagination possible, which is how a large table is read in bounded
 memory:
 
@@ -152,6 +168,19 @@ and it changes on a different cadence.
 more than one valid SQL representation (arrays as JSON in v1, as a child table in v2), so the
 registry must distinguish them or a v2 reader will silently misread a v1 table.
 
+**The right type is not the same as enough room in it.** A `DECIMAL(10,2)` column is a perfectly good
+`DECIMAL` and will still round a scale-12 value on the way in — the same loss the `DECIMAL`/`DOUBLE`
+distinction exists to prevent, arriving by another route. So an adopted table is checked for
+*representable range*, not just for JDBC type: for a decimal, the digits after the point and the
+digits before it are compared as two independent capacities, because a column can be wider overall and
+still destroy the fractional digits that matter. Integer types landing in a `NUMERIC` column are
+checked the same way.
+
+**Timestamps are held to milliseconds.** A payload timestamp matches the resolution of the routing
+time, and the generated DDL produces `TIMESTAMP(3)`. `Instant` carries nanoseconds, so a value with
+sub-millisecond precision is *rejected at write time* rather than quietly truncated by
+`Timestamp.from`, and a column with too few fractional digits is refused at startup.
+
 ## 5. A table declares its type in a registry
 
 A `pulse_tables` registry maps a data table to the type it holds:
@@ -220,16 +249,68 @@ So the sink accounts for three outcomes:
 
 All three go into the run manifest. `unknown` must never be silently folded into either neighbour.
 
+**The books must close, and `in flight` is not an outcome.** The accounting identity is
+
+```
+observed = committed + notCommitted + unknown + overflow + serializationErrors + abandoned + inFlight
+```
+
+`inFlight` is meaningful only while the sink is running. Once the writer has exited, an event with no
+outcome is simply *missing* — and the identity would still balance, and `hasFailures()` would still
+say no, purely because nobody counted it. So finalization classifies everything outstanding:
+`abandoned` covers events accepted after the sink stopped or failed, events still queued when the
+writer exited, and the batch it was holding. It is a separate category because it is neither overflow
+(the queue had room), nor a serialization error (they were never converted), nor delivered.
+
+The same rule applies inside a batch: a failure to even *prepare* the statement must account for the
+whole batch, not for the rows that were successfully bound — which is zero in exactly that case.
+
 **Retry needs an ingestion identity, which is not the natural key.** Each event carries a
 deterministic `ingestionId` — derived from `(runId, sequence)`, so it is stable across retries of the
-same event — under a unique constraint. A retry then either inserts, or violates that constraint,
-which *proves* the earlier attempt committed and resolves `unknown` into `committed`. Deduplication
-becomes a fact rather than a guess.
+same event — under a unique constraint.
+
+**Resolution reads the identities back; it does not interpret the error.** The tempting shortcut is to
+retry the insert and treat a unique violation as proof the earlier attempt committed. That is wrong
+twice over. SQLSTATE class `23` is *integrity constraint violation* generally — `23502` is not-null,
+`23503` foreign-key, `23513` a check — so an insert that failed for a completely unrelated reason
+reads as proof; and even a genuine `23505` may come from any other unique constraint on the table, a
+natural-key index included, and says nothing about these rows. Either mistake books a whole batch as
+delivered while the table holds none of it.
+
+So an `unknown` batch is resolved by querying which of its `ingestionId`s are actually stored, and
+inserting only what is genuinely missing. The id is deterministic from `(runId, sequence)` and no
+other run can produce it, so a stored id is necessarily this run's row — which is why the identity
+settles it and the payload need not be compared. A *partial* result is possible, means the batch's
+transaction was not atomic, and is reported rather than smoothed over. If the lookup itself cannot be
+performed, the batch stays `unknown` — and *that is itself a persistence failure*, subject to the
+declared policy like any other. For an application whose essential output is the database, "we cannot
+tell whether your data was written" is no better than "it was not", so an essential sink fails the run
+there too. Logging it and moving on is how a run finishes green with a hole in the data that nobody
+can even size. Deduplication is a fact rather than a guess, because it is looked up rather than
+deduced.
 
 This is deliberately distinct from the **opt-in natural-key upsert** (business key + event time),
 which exists so that re-running a strategy converges rather than duplicating. Using the natural key
 for retry safety would silently overwrite two legitimately distinct events that share a business key
 and timestamp. The two mechanisms answer different questions and both are needed.
+
+**The policy is wired into the engine, not just into the sink.** `SinkFailurePolicy.ESSENTIAL` sets
+the gateway's own fatality (`setFailureIsFatal`), and a persistence failure is reported through
+`failTerminally` (§8) — the channel the engine listens on. A policy that only set a local flag would
+be read by nobody outside the class, and the run would complete regardless.
+
+**An essential sink must also ack the engine's shutdown barrier.** Its writer thread is separate from
+the dispatch loop, so without `onShutDown` draining and waiting, the engine finishes, publishes its
+`RunOutcome`, and only afterwards does the last batch get written — a failure in the *final drain*,
+where a whole run's tail can be lost, then arrives too late to fail anything. The wait is bounded, and
+exceeding it is itself a terminal failure, since those events are unaccounted for.
+
+**The linger is a maximum batch age, not an idle timeout.** An idle timeout is reset by every arrival,
+so a stream arriving just faster than the linger never times out and the batch is committed only once
+it is *full* — at 199ms spacing and a batch of 500, a hundred seconds before anything reaches the
+database. The deadline is therefore measured from the event that opened the batch, which bounds the
+wait regardless of arrival rate. (`EventRecorderGateway` already flushes on a timer for the same
+reason.)
 
 **The sink's failure policy is configurable, with an observational default.** "Never kill the run" is
 right for a sink that records alongside the real output — it matches `RunRecording`, and killing a
@@ -313,13 +394,25 @@ work than JDBC does, and that cost is accepted knowingly.
 
 ## Recommended sequence
 
-1. **Storage mapping and delivery semantics** (§4, §7) — the two contracts everything else encodes.
-   Defining them late means rewriting what was built on the assumptions.
-2. **Binding and registry** (§1, §5), including the provisioning states.
-3. **Sink** — the simpler contract, no clock-driving constraint, and it exercises the mapping,
-   registry and generated DDL end to end.
-4. **Source failure propagation** (§8) — engine work, and a prerequisite for an honest source.
-5. **Source with snapshot replay** (§2, §3), building on a mapping already proven by the sink.
+All five steps are implemented.
+
+1. ~~**Storage mapping and delivery semantics** (§4, §7)~~ — `StorageMapping`, `ColumnMapping`,
+   `SqlLogicalType`; `DeliveryOutcome`, `DeliveryAccounting`, `IngestionId`, `SinkFailurePolicy`.
+2. ~~**Binding and registry** (§1, §5)~~ — `SqlTableBinding`, `TableRegistry` with the provisioning
+   states, `TableValidator` with the source/sink split.
+3. ~~**Sink**~~ — `SqlDialect` / `GenericSqlDialect` / `H2Dialect`, `DatumRowBinder`,
+   `SqlSinkGateway`.
+4. ~~**Source failure propagation** (§8)~~ — `GatewayFailure`, `FailureListener`,
+   `AbstractGateway.failTerminally`, engine abort, `RunOutcome.failedGateways()`.
+5. ~~**Source with snapshot replay** (§2, §3)~~ — `DatumRowReader`, keyset pagination on the dialect,
+   `SqlSourceGateway`.
+
+**A guard the design did not anticipate.** Mutation testing the source turned up a failure mode worth
+recording: changing the page comparison from `>` to `>=` does not fail a test, it *hangs* — the same
+page is re-read forever, making no progress and raising nothing. A replay that never ends and never
+says why is worse to diagnose than one that fails, so the source now checks that the paging cursor
+actually advanced and raises `NonAdvancingCursorException` if it has not. The same guard catches an
+ordering tuple that is not in fact unique.
 
 Test against an embedded database **and the first real production engine** from the start. The
 embedded one keeps CI fast; only the real one proves the guarantees — SQLite accepting `NUMERIC` DDL

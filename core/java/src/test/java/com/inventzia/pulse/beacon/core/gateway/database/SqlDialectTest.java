@@ -173,6 +173,37 @@ class SqlDialectTest {
     }
 
     @Test
+    void aSubMillisecondInstantIsRefusedNotTruncated() throws Exception {
+        // Instant carries nanoseconds; the column holds milliseconds. Timestamp.from() would drop the
+        // extra digits without a word - the same silent rounding a decimal is protected from.
+        SqlTableBinding b = barsBinding();
+        try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+            st.execute(dialect.createTableStatement(b));
+        }
+        CdfBar tooPrecise = new CdfBar("SYM", 1_700_000_000_000L,
+                BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, null,
+                Instant.parse("2026-01-02T00:00:00.123456789Z"), null,
+                LocalDate.of(2026, 1, 2), null, null, null);
+
+        assertThatThrownBy(() -> insert(b, tooPrecise))
+                .isInstanceOf(DatumRowBinder.ValueOutOfRangeException.class)
+                .hasMessageContaining("sub-millisecond");
+    }
+
+    @Test
+    void aWholeMillisecondInstantIsAccepted() throws Exception {
+        // The control: millisecond precision is the contract, not an obstacle.
+        SqlTableBinding b = barsBinding();
+        try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+            st.execute(dialect.createTableStatement(b));
+        }
+        insert(b, new CdfBar("SYM", 1_700_000_000_000L,
+                BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, BigDecimal.ONE, null,
+                Instant.parse("2026-01-02T00:00:00.123Z"), null,
+                LocalDate.of(2026, 1, 2), null, null, null));      // must not throw
+    }
+
+    @Test
     void aTimestampIsWrittenInUtcRegardlessOfTheJvmZone() throws Exception {
         SqlTableBinding b = barsBinding();
         try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {

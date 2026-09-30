@@ -236,6 +236,138 @@ class TableValidatorTest {
     }
 
     // ------------------------------------------------------------------
+    // A column must have room, not merely the right type
+    // ------------------------------------------------------------------
+
+    @Test
+    void aDecimalColumnTooNarrowToHoldTheMappingIsRefused() throws Exception {
+        // DECIMAL(10,2) is a perfectly good DECIMAL and still rounds a scale-12 value on the way in.
+        // That is the loss the DECIMAL/DOUBLE split exists to prevent, arriving by another route.
+        createBars("DECIMAL(10,2)");
+        try (Connection c = ds.getConnection()) {
+            TableValidator.Result r = TableValidator.validateForSink(c, barsBinding());
+            assertThat(r.isValid()).isFalse();
+            assertThat(r.problems()).anyMatch(p -> p.toLowerCase().contains("op")
+                    && p.contains("silently rounded"));
+        }
+    }
+
+    @Test
+    void aDecimalColumnWithEnoughRoomIsAccepted() throws Exception {
+        // The control: without it the check above would pass just as well if every decimal were
+        // refused. A wider column than needed is fine.
+        createBars("DECIMAL(40,14)");
+        try (Connection c = ds.getConnection()) {
+            assertThat(TableValidator.validateForSink(c, barsBinding()).problems()).isEmpty();
+        }
+    }
+
+    @Test
+    void enoughTotalWidthDoesNotExcuseTooFewFractionalDigits() throws Exception {
+        // 38 digits in total, but only 2 after the point: the integer part is ample and the scale is
+        // what destroys the value. Precision and scale have to be checked as separate capacities.
+        createBars("DECIMAL(38,2)");
+        try (Connection c = ds.getConnection()) {
+            assertThat(TableValidator.validateForSink(c, barsBinding()).problems())
+                    .anyMatch(p -> p.contains("silently rounded"));
+        }
+    }
+
+    @Test
+    void aTimestampColumnWithoutMillisecondsIsRefused() throws Exception {
+        execute("CREATE TABLE stamps ("
+                + " symb VARCHAR(64) NOT NULL, timestamp BIGINT NOT NULL,"
+                + " op DECIMAL(38,12) NOT NULL, hi DECIMAL(38,12) NOT NULL,"
+                + " lo DECIMAL(38,12) NOT NULL, cl DECIMAL(38,12) NOT NULL,"
+                + " vlm DECIMAL(38,12) NOT NULL, vwap DECIMAL(38,12),"
+                + " datetime TIMESTAMP(0) NOT NULL,"          // seconds only
+                + " count BIGINT, date DATE NOT NULL, expiry VARCHAR(32),"
+                + " strike DECIMAL(38,12), symExp VARCHAR(64))");
+        SqlTableBinding b = SqlTableBinding.of(QualifiedTableName.of("stamps"),
+                StorageMapping.of(com.inventzia.pulse.data.schemas.marketdata.CdfBar.class));
+        try (Connection c = ds.getConnection()) {
+            assertThat(TableValidator.validateForSink(c, b).problems())
+                    .anyMatch(p -> p.contains("datetime") && p.contains("TIMESTAMP(3)"));
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // The ordering tuple must be verifiably unique
+    // ------------------------------------------------------------------
+
+    @Test
+    void aTupleCoveredByThePrimaryKeyIsAccepted() throws Exception {
+        execute("CREATE TABLE heartbeats ("
+                + " beatKey VARCHAR(256) NOT NULL,"
+                + " beatTime BIGINT NOT NULL,"
+                + " PRIMARY KEY (beatKey, beatTime))");
+        try (Connection c = ds.getConnection()) {
+            assertThat(TableValidator.uniquenessIsDeclared(c, sourceBinding())).isTrue();
+            assertThat(TableValidator.validateForSource(c, sourceBinding()).problems()).isEmpty();
+        }
+    }
+
+    @Test
+    void aTupleWithNoCoveringConstraintIsRefused() throws Exception {
+        // Non-null is not enough. If the tuple can repeat, keyset paging skips every row after the
+        // first at a duplicated value - silently, because the cursor still advances.
+        execute("CREATE TABLE heartbeats ("
+                + " beatKey VARCHAR(256) NOT NULL,"
+                + " beatTime BIGINT NOT NULL)");
+        try (Connection c = ds.getConnection()) {
+            assertThat(TableValidator.uniquenessIsDeclared(c, sourceBinding())).isFalse();
+            assertThat(TableValidator.validateForSource(c, sourceBinding()).problems())
+                    .anyMatch(p -> p.contains("not covered by any declared primary key"));
+        }
+    }
+
+    @Test
+    void aUniqueIndexThatIsASubsetOfTheTupleIsEnough() throws Exception {
+        // A subset suffices: extra ordering columns only refine an order that is already total.
+        execute("CREATE TABLE heartbeats ("
+                + " beatKey VARCHAR(256) NOT NULL,"
+                + " beatTime BIGINT NOT NULL,"
+                + " " + IngestionId.COLUMN + " VARCHAR(320) NOT NULL)");
+        execute("CREATE UNIQUE INDEX ux_ing ON heartbeats (" + IngestionId.COLUMN + ")");
+
+        SqlTableBinding withIngestion = sinkBinding()
+                .withOrderingColumns(List.of("beatTime", "beatKey", IngestionId.COLUMN));
+        try (Connection c = ds.getConnection()) {
+            assertThat(TableValidator.uniquenessIsDeclared(c, withIngestion)).isTrue();
+            assertThat(TableValidator.validateForSource(c, withIngestion).problems()).isEmpty();
+        }
+    }
+
+    @Test
+    void aNonUniqueIndexDoesNotCount() throws Exception {
+        execute("CREATE TABLE heartbeats ("
+                + " beatKey VARCHAR(256) NOT NULL,"
+                + " beatTime BIGINT NOT NULL)");
+        execute("CREATE INDEX ix_order ON heartbeats (beatTime, beatKey)");   // not unique
+        try (Connection c = ds.getConnection()) {
+            assertThat(TableValidator.uniquenessIsDeclared(c, sourceBinding()))
+                    .as("an index that merely speeds the read does not make the tuple total")
+                    .isFalse();
+        }
+    }
+
+    @Test
+    void anOrderingColumnOutsideTheDatumIsAllowedAndMustExist() throws Exception {
+        // The ingestion id is not a datum field, and it is exactly what makes the tuple unique.
+        SqlTableBinding withIngestion = sinkBinding()
+                .withOrderingColumns(List.of("beatTime", "beatKey", IngestionId.COLUMN));
+        assertThat(withIngestion.auxiliaryOrderingColumns()).containsExactly(IngestionId.COLUMN);
+
+        execute("CREATE TABLE heartbeats ("
+                + " beatKey VARCHAR(256) NOT NULL,"
+                + " beatTime BIGINT NOT NULL)");     // the auxiliary column is missing
+        try (Connection c = ds.getConnection()) {
+            assertThat(TableValidator.validateForSource(c, withIngestion).problems())
+                    .anyMatch(p -> p.contains(IngestionId.COLUMN) && p.contains("does not exist"));
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Ordering tuple discovery
     // ------------------------------------------------------------------
 
@@ -280,13 +412,19 @@ class TableValidatorTest {
     }
 
     @Test
-    void anOrderingTupleCannotNameAnUnknownOrRepeatedColumn() {
-        assertThatThrownBy(() -> sinkBinding().withOrderingColumns(List.of("beatTime", "nope")))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("not a column");
+    void anOrderingTupleCannotRepeatAColumn() {
         assertThatThrownBy(() -> sinkBinding().withOrderingColumns(List.of("beatTime", "beatTime")))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("repeat");
+    }
+
+    @Test
+    void anOrderingColumnOutsideTheDatumIsAcceptedByTheBinding() {
+        // Deliberately permitted: the column that makes a tuple unique is often not a datum field at
+        // all. Whether it exists is a question about the table, so the validator answers it - the
+        // binding performs no I/O and cannot.
+        SqlTableBinding b = sinkBinding().withOrderingColumns(List.of("beatTime", "anything"));
+        assertThat(b.auxiliaryOrderingColumns()).containsExactly("anything");
     }
 
     @Test

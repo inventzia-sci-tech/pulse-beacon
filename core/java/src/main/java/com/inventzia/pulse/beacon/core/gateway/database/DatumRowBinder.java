@@ -109,7 +109,8 @@ public final class DatumRowBinder {
             case DECIMAL       -> ps.setBigDecimal(index, checkedDecimal(column, (BigDecimal) value));
             case DOUBLE        -> ps.setDouble(index, ((Number) value).doubleValue());
             case BOOLEAN       -> ps.setBoolean(index, (Boolean) value);
-            case TIMESTAMP_UTC -> ps.setTimestamp(index, Timestamp.from((Instant) value),
+            case TIMESTAMP_UTC -> ps.setTimestamp(index,
+                                        Timestamp.from(checkedInstant(column, (Instant) value)),
                                         utcCalendar());
             case DATE          -> ps.setDate(index, Date.valueOf((LocalDate) value));
         }
@@ -136,6 +137,25 @@ public final class DatumRowBinder {
         }
         return scaled;
     }
+
+    /**
+     * An instant the column can hold exactly, or an exception naming what would have been lost.
+     *
+     * <p>A timestamp column holds milliseconds, matching the routing time and the {@code TIMESTAMP(3)}
+     * the generated DDL produces. An {@link Instant} carries nanoseconds, and
+     * {@code Timestamp.from(instant)} would quietly drop the extra digits — the same silent rounding
+     * a decimal is protected from, and no more acceptable here.
+     */
+    private static Instant checkedInstant(ColumnMapping column, Instant value) {
+        if (value.getNano() % NANOS_PER_MILLI != 0) {
+            throw new ValueOutOfRangeException("field '" + column.fieldName() + "' value " + value
+                    + " has sub-millisecond precision, which the column cannot hold; storing it would"
+                    + " truncate it, so it is refused rather than silently changed");
+        }
+        return value;
+    }
+
+    private static final int NANOS_PER_MILLI = 1_000_000;
 
     /** Timestamps are written in UTC explicitly; the JVM's default zone must not reach the table. */
     private static java.util.Calendar utcCalendar() {

@@ -40,14 +40,27 @@ public final class DeliveryAccounting {
     private final AtomicLong unknown             = new AtomicLong(); // outcome not establishable
     private final AtomicLong overflow            = new AtomicLong(); // queue full, never enqueued
     private final AtomicLong serializationErrors = new AtomicLong(); // could not be turned into a row
+    private final AtomicLong abandoned           = new AtomicLong(); // accepted, never attempted
 
     /** A point-in-time snapshot of the books. */
     public record Counts(long observed, long committed, long notCommitted, long unknown,
-                         long overflow, long serializationErrors) {
+                         long overflow, long serializationErrors, long abandoned) {
 
         /** Events handed to the sink whose fate is not yet decided. */
         public long inFlight() {
-            return observed - committed - notCommitted - unknown - overflow - serializationErrors;
+            return observed - committed - notCommitted - unknown - overflow - serializationErrors
+                   - abandoned;
+        }
+
+        /**
+         * Whether every accepted event has an outcome.
+         *
+         * <p>Only meaningful once the writer has stopped. Anything still {@code inFlight} then was
+         * accepted and never classified — which is the one state the books must never end in, because
+         * it reads as "nothing went wrong" while events are simply missing.
+         */
+        public boolean isFinal() {
+            return inFlight() == 0;
         }
 
         /**
@@ -63,7 +76,8 @@ public final class DeliveryAccounting {
 
         /** Whether anything at all failed to reach the database, {@code unknown} included. */
         public boolean hasFailures() {
-            return notCommitted > 0 || unknown > 0 || overflow > 0 || serializationErrors > 0;
+            return notCommitted > 0 || unknown > 0 || overflow > 0 || serializationErrors > 0
+                   || abandoned > 0;
         }
     }
 
@@ -109,10 +123,23 @@ public final class DeliveryAccounting {
         serializationErrors.addAndGet(requireNonNegative(n));
     }
 
+    /**
+     * Events the sink accepted but never attempted: they arrived after it stopped or failed, or were
+     * still queued when the writer exited.
+     *
+     * <p>A separate category on purpose. They are not overflow (the queue had room), not a
+     * serialization error (they were never converted), and certainly not committed. Folding them
+     * anywhere else, or leaving them uncounted, produces books that balance only because the missing
+     * events were never named.
+     */
+    public void abandoned(long n) {
+        abandoned.addAndGet(requireNonNegative(n));
+    }
+
     /** A consistent-enough snapshot for reporting; not a linearizable read of all six counters. */
     public Counts counts() {
         return new Counts(observed.get(), committed.get(), notCommitted.get(), unknown.get(),
-                overflow.get(), serializationErrors.get());
+                overflow.get(), serializationErrors.get(), abandoned.get());
     }
 
     private AtomicLong counterFor(DeliveryOutcome outcome) {
@@ -133,6 +160,7 @@ public final class DeliveryAccounting {
         Counts c = counts();
         return "DeliveryAccounting[observed=" + c.observed() + ", committed=" + c.committed()
                + ", notCommitted=" + c.notCommitted() + ", unknown=" + c.unknown()
-               + ", overflow=" + c.overflow() + ", serializationErrors=" + c.serializationErrors() + "]";
+               + ", overflow=" + c.overflow() + ", serializationErrors=" + c.serializationErrors()
+               + ", abandoned=" + c.abandoned() + "]";
     }
 }

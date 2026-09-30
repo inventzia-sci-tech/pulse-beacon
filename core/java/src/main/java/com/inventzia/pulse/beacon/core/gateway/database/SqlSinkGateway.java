@@ -18,10 +18,13 @@ import com.inventzia.pulse.data.datum.Datum;
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -61,6 +64,9 @@ public class SqlSinkGateway extends AbstractGateway {
     /** How long the writer waits for a full batch before committing what it has. */
     public static final long DEFAULT_LINGER_MILLIS = 200;
 
+    /** How long the engine's shutdown barrier waits for the final drain. */
+    public static final long DEFAULT_DRAIN_TIMEOUT_MILLIS = 30_000;
+
     private final DataSource         dataSource;
     private final SqlTableBinding    binding;
     private final SqlDialect         dialect;
@@ -72,6 +78,9 @@ public class SqlSinkGateway extends AbstractGateway {
     private final BlockingQueue<Pending> queue;
     private final int  batchSize;
     private final long lingerMillis;
+
+    /** How long the engine's shutdown barrier waits for the writer to drain. */
+    private volatile long drainTimeoutMillis = DEFAULT_DRAIN_TIMEOUT_MILLIS;
 
     private final AtomicLong sequence = new AtomicLong();
 
@@ -108,6 +117,10 @@ public class SqlSinkGateway extends AbstractGateway {
         this.batchSize     = Math.max(1, batchSize);
         this.lingerMillis  = Math.max(1, lingerMillis);
         setDriveClock(false);      // a sink never drives the clock
+        // The declared policy IS the gateway's fatality: an application whose essential output is the
+        // database wants a persistence failure to fail the run, and the engine is what can do that.
+        // Without this the policy would only ever set a local flag nobody outside the sink reads.
+        setFailureIsFatal(failurePolicy.isFatal());
     }
 
     // ------------------------------------------------------------------
@@ -141,35 +154,88 @@ public class SqlSinkGateway extends AbstractGateway {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         } catch (Throwable t) {
-            markFailed("sink writer failed: " + t);
+            // The writer thread is gone, so the sink is terminal whatever the policy says. The policy
+            // still decides whether that ends the run.
+            markFailed("sink writer failed", t);
         } finally {
             stopping = true;
+            finalizeAccounting();
             closeQuietly(connection);
             connection = null;
             terminated = true;
         }
     }
 
+    /**
+     * Classify everything still outstanding, so no event is left "in flight" after the writer exits.
+     *
+     * <p>In-flight is a meaningful state only while the sink is running. Once it has stopped, an event
+     * with no outcome is simply missing — and the books would balance, and {@code hasFailures()} would
+     * say no, purely because nobody counted it.
+     */
+    private void finalizeAccounting() {
+        List<Pending> stranded = new ArrayList<>();
+        queue.drainTo(stranded);
+        if (!stranded.isEmpty()) {
+            accounting.abandoned(stranded.size());
+            log.severe(name() + ": " + stranded.size() + " events were still queued when the writer"
+                       + " stopped; they were never written");
+        }
+        DeliveryAccounting.Counts c = accounting.counts();
+        if (!c.isFinal()) {
+            // A bug in this class rather than in the database, and exactly the kind that would
+            // otherwise surface as a manifest quietly understating what was lost.
+            log.severe(name() + ": accounting did not close - " + c.inFlight()
+                       + " events have no outcome: " + c);
+        }
+    }
+
     private void drain() throws InterruptedException {
         List<Pending> batch = new ArrayList<>(batchSize);
+        try {
+            drainLoop(batch);
+        } finally {
+            // Whatever is still in hand when the loop ends abnormally was accepted and never written.
+            if (!batch.isEmpty()) {
+                accounting.abandoned(batch.size());
+                log.severe(name() + ": " + batch.size() + " events were held but never written");
+            }
+        }
+    }
+
+    private void drainLoop(List<Pending> batch) throws InterruptedException {
+        // The age of the batch, measured from the event that opened it - NOT the time since the last
+        // arrival. An idle timeout is reset by every event, so a stream arriving just faster than the
+        // linger never times out and the batch is only committed once it is full: at 199ms spacing and
+        // the default batch of 500, that is a hundred seconds before anything reaches the database.
+        // A maximum age bounds the wait regardless of arrival rate.
+        long batchDeadline = 0;
+
         while (true) {
-            Pending p = queue.poll(lingerMillis, TimeUnit.MILLISECONDS);
+            long waitMillis = batch.isEmpty()
+                    ? lingerMillis
+                    : Math.max(0L, (batchDeadline - System.nanoTime()) / 1_000_000L);
+
+            Pending p = queue.poll(waitMillis, TimeUnit.MILLISECONDS);
             if (p != null) {
+                if (batch.isEmpty()) {
+                    batchDeadline = System.nanoTime() + lingerMillis * 1_000_000L;
+                }
                 batch.add(p);
-                if (batch.size() >= batchSize) {
+            }
+
+            boolean full = batch.size() >= batchSize;
+            boolean aged = !batch.isEmpty() && System.nanoTime() >= batchDeadline;
+            if (full || aged) {
+                writeBatch(batch);
+                batch.clear();
+            }
+            if (p == null && stopping && queue.isEmpty()) {
+                if (!batch.isEmpty()) {          // commit the tail before leaving
                     writeBatch(batch);
                     batch.clear();
                 }
-            } else {
-                // Idle: commit what is waiting rather than holding it until the batch fills. A quiet
-                // stream should not sit uncommitted for an unbounded time.
-                if (!batch.isEmpty()) {
-                    writeBatch(batch);
-                    batch.clear();
-                }
-                if (stopping && queue.isEmpty()) {
-                    return;
-                }
+                return;
             }
         }
     }
@@ -222,6 +288,7 @@ public class SqlSinkGateway extends AbstractGateway {
             return;
         }
 
+        int rejected = 0;
         try (PreparedStatement ps = c.prepareStatement(dialect.insertStatement(binding))) {
             for (Pending p : batch) {
                 try {
@@ -231,18 +298,23 @@ public class SqlSinkGateway extends AbstractGateway {
                 } catch (DatumRowBinder.ValueOutOfRangeException e) {
                     // One unrepresentable value must not cost the whole batch.
                     accounting.serializationError(1);
+                    rejected++;
                     log.severe(name() + ": " + p.ingestionId() + " rejected: " + e.getMessage());
                 }
             }
             if (insertable.isEmpty()) {
-                return;
+                return;                       // every row was rejected, and each is already counted
             }
             ps.executeBatch();
         } catch (SQLException e) {
             // Before the commit, so it can be undone and the outcome is knowable.
             rollbackQuietly(c);
-            accounting.record(insertable.size(), DeliveryOutcome.NOT_COMMITTED);
-            onPersistenceFailure("insert failed, " + insertable.size() + " rows not committed", e);
+            // Everything not already counted as a serialization error - NOT insertable.size(), which
+            // is still zero when prepareStatement itself was what failed. Using it there would leave
+            // the whole batch unclassified and looking like nothing had gone wrong.
+            int unaccounted = n - rejected;
+            accounting.record(unaccounted, DeliveryOutcome.NOT_COMMITTED);
+            onPersistenceFailure("insert failed, " + unaccounted + " rows not committed", e);
             return;
         }
 
@@ -256,55 +328,110 @@ public class SqlSinkGateway extends AbstractGateway {
             log.severe(name() + ": commit outcome unknown for " + insertable.size() + " rows: " + e);
             // The connection is now unreasonable-about: its transaction may or may not have committed.
             discardConnection();
-            resolveByRetry(insertable);
+            resolveByVerification(insertable);
         }
     }
 
     /**
-     * Retry an unknown batch to find out what actually happened.
+     * Establish what actually happened to an unknown batch, by looking it up.
      *
-     * <p>The retry carries the same ingestion ids, so it either inserts — the earlier attempt had not
-     * committed — or violates the unique constraint, which <em>proves</em> it had. Either way the
-     * outcome becomes a fact. If the retry itself cannot reach the database, the batch stays
-     * {@code unknown}, which is the honest answer.
+     * <p><b>Facts, not inferences.</b> The tempting version of this asks "did the retry raise a unique
+     * violation?" and treats yes as proof the earlier attempt committed. It is wrong twice over: SQLSTATE
+     * class 23 covers not-null and foreign-key violations too, so an insert that failed for an unrelated
+     * reason would read as proof; and even a genuine {@code 23505} may come from some other unique
+     * constraint on the table and say nothing about these rows. Either way a whole batch would be booked
+     * as committed while the table held none of it.
+     *
+     * <p>So the outcome is resolved by reading back which ingestion ids are stored, and inserting only
+     * what is genuinely missing. The id is deterministic from {@code (runId, sequence)} and no other run
+     * can produce it, so a stored id is necessarily this run's row — which is why the identity settles it
+     * and the payload need not be compared.
+     *
+     * <p>A <b>partial</b> result is possible and is reported rather than smoothed over: it means the
+     * batch's transaction was not atomic, which is worth an operator knowing. If the lookup itself cannot
+     * be performed, the batch stays {@code unknown} — the honest answer.
      */
-    private void resolveByRetry(List<Pending> batch) {
-        if (!dialect.distinguishesUniqueViolation()) {
-            return;    // cannot tell a duplicate from any other error here; unknown stays unknown
-        }
-        // A FRESH connection, and this is not a detail. Retrying on the connection whose commit failed
-        // would insert against that same still-open transaction, and the unique violation it raised
-        // would be against the retry's OWN pending rows - proving nothing, while looking exactly like
-        // proof that the earlier attempt committed. That reports rows as committed when the table is
-        // empty, which is the precise lie this whole design exists to prevent.
+    private void resolveByVerification(List<Pending> batch) {
+        // A FRESH connection, and not a detail. The connection whose commit failed may hold an open
+        // transaction; querying or inserting on it would see that transaction's own pending rows and
+        // prove nothing.
         try (Connection fresh = dataSource.getConnection()) {
             fresh.setAutoCommit(false);
-            try (PreparedStatement ps = fresh.prepareStatement(dialect.insertStatement(binding))) {
-                for (Pending p : batch) {
-                    rowBinder.bind(ps, p.payload(), p.ingestionId());
-                    ps.addBatch();
-                }
-                ps.executeBatch();
-                fresh.commit();
+
+            Set<String> stored = storedIngestionIds(fresh, batch);
+            List<Pending> missing = batch.stream()
+                    .filter(p -> !stored.contains(p.ingestionId().encoded()))
+                    .toList();
+
+            if (missing.isEmpty()) {
                 accounting.resolveUnknown(batch.size(), DeliveryOutcome.COMMITTED);
-                log.info(name() + ": retry inserted " + batch.size()
-                         + " rows; the earlier attempt had not committed");
-            } catch (SQLException e) {
-                rollbackQuietly(fresh);
-                if (dialect.isUniqueViolation(e)) {
-                    accounting.resolveUnknown(batch.size(), DeliveryOutcome.COMMITTED);
-                    log.info(name() + ": retry hit the ingestion-id constraint, which proves the"
-                             + " earlier attempt committed " + batch.size() + " rows");
-                } else {
-                    log.severe(name() + ": retry could not establish the outcome of " + batch.size()
-                               + " rows; they remain unknown: " + e);
+                log.info(name() + ": all " + batch.size() + " rows are present, so the earlier attempt"
+                         + " committed despite the lost acknowledgement");
+                return;
+            }
+            if (missing.size() < batch.size()) {
+                log.severe(name() + ": the batch committed only partially - " + stored.size() + " of "
+                           + batch.size() + " rows are present; inserting the remainder");
+            }
+            insertAndCommit(fresh, missing);
+            accounting.resolveUnknown(batch.size(), DeliveryOutcome.COMMITTED);
+            log.info(name() + ": inserted the " + missing.size() + " rows that were missing; the batch"
+                     + " is now committed in full");
+
+        } catch (SQLException e) {
+            unresolved(batch.size(), e);
+        } catch (RuntimeException e) {
+            unresolved(batch.size(), e);
+        }
+    }
+
+    /**
+     * The outcome of a batch could not be established, and stays {@link DeliveryOutcome#UNKNOWN}.
+     *
+     * <p>This is a persistence failure like any other, and the declared policy applies to it. For an
+     * application whose essential output <em>is</em> the database, "we cannot tell whether your data
+     * was written" is no better than "it was not" — so an essential sink must fail the run here too,
+     * not merely log. Leaving it at a log entry is how a run finishes green with a hole in the data
+     * that nobody can even size.
+     */
+    private void unresolved(int rows, Exception cause) {
+        onPersistenceFailure("could not establish the outcome of " + rows
+                             + " rows; they remain unknown", cause);
+    }
+
+    /** Which of the batch's ingestion ids are already in the table, asked in bounded chunks. */
+    private Set<String> storedIngestionIds(Connection c, List<Pending> batch) throws SQLException {
+        Set<String> stored = new HashSet<>();
+        int chunk = Math.max(1, dialect.maxInListSize());
+        for (int from = 0; from < batch.size(); from += chunk) {
+            List<Pending> slice = batch.subList(from, Math.min(from + chunk, batch.size()));
+            String sql = dialect.selectStoredIngestionIdsStatement(binding, slice.size());
+            try (PreparedStatement ps = c.prepareStatement(sql)) {
+                for (int i = 0; i < slice.size(); i++) {
+                    ps.setString(i + 1, slice.get(i).ingestionId().encoded());
+                }
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        stored.add(rs.getString(1));
+                    }
                 }
             }
+        }
+        return stored;
+    }
+
+    /** Insert exactly these rows and commit them. */
+    private void insertAndCommit(Connection c, List<Pending> rows) throws SQLException {
+        try (PreparedStatement ps = c.prepareStatement(dialect.insertStatement(binding))) {
+            for (Pending p : rows) {
+                rowBinder.bind(ps, p.payload(), p.ingestionId());
+                ps.addBatch();
+            }
+            ps.executeBatch();
+            c.commit();
         } catch (SQLException e) {
-            log.severe(name() + ": retry could not reach the database; " + batch.size()
-                       + " rows remain unknown: " + e);
-        } catch (RuntimeException e) {
-            log.severe(name() + ": retry failed; " + batch.size() + " rows remain unknown: " + e);
+            rollbackQuietly(c);
+            throw e;
         }
     }
 
@@ -324,14 +451,25 @@ public class SqlSinkGateway extends AbstractGateway {
     private void onPersistenceFailure(String what, Throwable cause) {
         log.severe(name() + ": " + what + ": " + cause);
         if (failurePolicy.isFatal()) {
-            markFailed(what + ": " + cause);
+            // Essential: the database IS this application's output, so there is nothing useful left to
+            // do. Reported through the gateway failure channel, which is what reaches the engine and
+            // ends the run - a local flag would only ever be read by this class.
+            markFailed(what, cause);
         }
+        // Observational: keep going. The failure is still counted, and the counts travel into the run
+        // manifest (§7), so it is recorded rather than silent - it simply does not stop the run.
     }
 
-    private void markFailed(String detail) {
+    /**
+     * The sink can do no more: stop accepting, and tell the engine.
+     *
+     * <p>{@link AbstractGateway#failTerminally} is what makes this visible outside the sink. Whether it
+     * ends the run is the declared policy, applied through {@code setFailureIsFatal} at construction.
+     */
+    private void markFailed(String detail, Throwable cause) {
         failed = true;
-        failureDetail = detail;
-        log.severe(name() + ": " + detail);
+        failureDetail = detail + (cause != null ? ": " + cause : "");
+        failTerminally(detail, cause);
     }
 
     // ------------------------------------------------------------------
@@ -342,6 +480,9 @@ public class SqlSinkGateway extends AbstractGateway {
     public <P extends Datum> void onEvent(Topic<P> topic, P payload) {
         accounting.observe(1);
         if (stopping || failed) {
+            // Accepted by the engine but never attempted. Counting it is what keeps the books from
+            // balancing only because the missing events were never named.
+            accounting.abandoned(1);
             return;
         }
         try {
@@ -370,6 +511,36 @@ public class SqlSinkGateway extends AbstractGateway {
         stopping = true;
     }
 
+    /**
+     * The engine's shutdown barrier: drain and commit before the run is allowed to complete.
+     *
+     * <p>Without this the sink's writer thread outlives the decision it should inform. The engine
+     * finishes dispatching, publishes its {@link com.inventzia.pulse.beacon.core.RunOutcome}, and only
+     * afterwards does the last batch get written — so a failure in the <em>final drain</em>, which is
+     * where a whole run's tail can be lost, arrives too late to fail anything. An essential sink would
+     * report a completed run whose closing writes never landed.
+     *
+     * <p>Bounded: a sink that cannot finish must not hang the run forever. Exceeding the limit is
+     * itself a terminal failure, since the queued events are unaccounted for.
+     */
+    @Override
+    protected void onShutDown(long timeMillis) {
+        requestStop();
+        long deadline = System.nanoTime() + drainTimeoutMillis * 1_000_000L;
+        while (!terminated && System.nanoTime() < deadline) {
+            try {
+                Thread.sleep(5);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+        if (!terminated) {
+            markFailed("did not finish draining within " + drainTimeoutMillis + "ms; "
+                       + queue.size() + " events are unaccounted for", null);
+        }
+    }
+
     /** The books. All three outcomes go into the run manifest; none is folded into another. */
     public DeliveryAccounting.Counts counts() {
         return accounting.counts();
@@ -393,5 +564,10 @@ public class SqlSinkGateway extends AbstractGateway {
     /** The table this sink writes to. */
     public SqlTableBinding binding() {
         return binding;
+    }
+
+    /** How long the engine's shutdown barrier will wait for this sink to drain. */
+    public void setDrainTimeoutMillis(long millis) {
+        this.drainTimeoutMillis = Math.max(1, millis);
     }
 }

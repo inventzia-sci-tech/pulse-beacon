@@ -22,6 +22,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 
 /**
  * Checks a real table against the binding that claims to describe it — differently for a source than
@@ -84,10 +85,24 @@ public final class TableValidator {
         }
         for (String ord : binding.orderingColumns()) {
             ActualColumn col = actual.get(key(ord));
-            if (col != null && col.nullable()) {
+            if (col == null) {
+                problems.add("ordering column '" + ord + "' does not exist in the table");
+                continue;
+            }
+            if (col.nullable()) {
                 problems.add("ordering column '" + ord + "' is nullable; the tuple must be non-null"
                         + " for the order to be total");
             }
+        }
+        // Non-null is necessary and nowhere near sufficient. If the tuple can repeat, keyset paging
+        // skips every row after the first at a duplicated value - silently, since the cursor does
+        // advance and no page is ever re-read. Rows simply vanish from the replay with nothing
+        // reporting it. So uniqueness must be VERIFIED against a declared constraint, never assumed.
+        if (binding.isReplayable() && !uniquenessIsDeclared(c, binding)) {
+            problems.add("the ordering tuple " + binding.orderingColumns() + " is not covered by any"
+                    + " declared primary key or unique index, so rows sharing those values would be"
+                    + " silently skipped. Add a unique constraint, or append a per-event unique column"
+                    + " such as '" + IngestionId.COLUMN + "' to the tuple");
         }
         return new Result(binding.table(), "source", List.copyOf(problems), List.copyOf(warnings));
     }
@@ -129,6 +144,17 @@ public final class TableValidator {
                         + " but " + m.fieldName() + " needs " + m.type()
                         + (m.type().needsPrecision()
                            ? " (" + m.precision() + "," + m.scale() + ")" : ""));
+                continue;
+            }
+            // The right JDBC type is not the same as enough room in it. A DECIMAL(10,2) column is a
+            // perfectly good DECIMAL and will still round a scale-12 value on the way in - which is
+            // the very loss the DECIMAL/DOUBLE distinction exists to prevent, arriving by another
+            // route. The driver reports precision and scale, so there is no excuse for not checking.
+            String tooNarrow = tooNarrowFor(m, col);
+            if (tooNarrow != null) {
+                problems.add("column '" + m.columnName() + "' is " + describe(col)
+                        + " but " + m.fieldName() + " needs " + tooNarrow
+                        + "; values would be silently rounded");
             }
             if (m.role() != ColumnMapping.Role.VALUE && col.nullable()) {
                 problems.add("routing column '" + m.columnName() + "' is nullable; the engine needs a"
@@ -163,11 +189,115 @@ public final class TableValidator {
         };
     }
 
+    /**
+     * Whether the column can represent everything the mapping can, or {@code null} if it can.
+     *
+     * <p>Checked as two independent capacities for a decimal: the digits after the point (scale) and
+     * the digits before it (precision minus scale). A column can be wider overall and still lose the
+     * fractional digits that matter.
+     */
+    private static String tooNarrowFor(ColumnMapping m, ActualColumn col) {
+        switch (m.type()) {
+            case DECIMAL -> {
+                int neededScale    = m.scale();
+                int neededIntegral = m.precision() - m.scale();
+                int actualScale    = col.decimalDigits();
+                int actualIntegral = col.size() - col.decimalDigits();
+                if (actualScale < neededScale || actualIntegral < neededIntegral) {
+                    return "DECIMAL(" + m.precision() + "," + m.scale() + ")";
+                }
+            }
+            case INT64 -> {
+                // Only meaningful when a 64-bit integer landed in a NUMERIC column; a real BIGINT
+                // reports its own width and needs no check.
+                if (col.jdbcType() == JDBCType.NUMERIC || col.jdbcType() == JDBCType.DECIMAL) {
+                    if (col.decimalDigits() > 0 || col.size() < 19) return "19 integer digits";
+                }
+            }
+            case INT32 -> {
+                if (col.jdbcType() == JDBCType.NUMERIC || col.jdbcType() == JDBCType.DECIMAL) {
+                    if (col.decimalDigits() > 0 || col.size() < 10) return "10 integer digits";
+                }
+            }
+            case TIMESTAMP_UTC -> {
+                // The routing time is epoch millis, and a payload timestamp is held to the same
+                // resolution. A TIMESTAMP(0) column would drop the milliseconds without a word.
+                if (col.decimalDigits() < MILLISECOND_DIGITS) {
+                    return "TIMESTAMP(" + MILLISECOND_DIGITS + ")";
+                }
+            }
+            default -> { /* TEXT length is not declared by the schema; nothing to compare against */ }
+        }
+        return null;
+    }
+
+    /** Fractional-second digits required of a timestamp column: milliseconds. */
+    public static final int MILLISECOND_DIGITS = 3;
+
+    private static String describe(ActualColumn col) {
+        return switch (col.jdbcType()) {
+            case DECIMAL, NUMERIC -> col.typeName() + "(" + col.size() + "," + col.decimalDigits() + ")";
+            case TIMESTAMP, TIMESTAMP_WITH_TIMEZONE -> col.typeName() + "(" + col.decimalDigits() + ")";
+            default -> col.typeName();
+        };
+    }
+
     private static boolean is(ActualColumn col, JDBCType... accepted) {
         for (JDBCType t : accepted) {
             if (col.jdbcType() == t) return true;
         }
         return false;
+    }
+
+    /**
+     * Whether some declared primary key or unique index is a subset of the ordering tuple.
+     *
+     * <p>A subset is what matters, not an exact match: if a unique key's columns all appear in the
+     * tuple, the tuple is unique too. Extra columns beyond it only refine the order further.
+     *
+     * <p>Asked of the catalog rather than of the data. A {@code SELECT} proving no duplicates exist
+     * today says nothing about tomorrow, and on a large table it is not cheap enough to run at every
+     * startup.
+     */
+    public static boolean uniquenessIsDeclared(Connection c, SqlTableBinding binding)
+            throws SQLException {
+        Set<String> tuple = binding.orderingColumns().stream()
+                .map(TableValidator::key).collect(java.util.stream.Collectors.toSet());
+        for (List<String> unique : declaredUniqueKeys(c, binding.table())) {
+            if (!unique.isEmpty() && tuple.containsAll(unique)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** Every declared unique column set: the primary key, plus each unique index. */
+    private static List<List<String>> declaredUniqueKeys(Connection c, QualifiedTableName table)
+            throws SQLException {
+        DatabaseMetaData md = c.getMetaData();
+        String name = resolveCase(c, table);
+        List<List<String>> keys = new ArrayList<>();
+
+        Map<Short, String> pk = new java.util.TreeMap<>();
+        try (ResultSet rs = md.getPrimaryKeys(table.catalog(), table.schema(), name)) {
+            while (rs.next()) {
+                pk.put(rs.getShort("KEY_SEQ"), key(rs.getString("COLUMN_NAME")));
+            }
+        }
+        if (!pk.isEmpty()) keys.add(List.copyOf(pk.values()));
+
+        // unique=true, approximate=false: declared constraints only, not statistics.
+        Map<String, List<String>> byIndex = new LinkedHashMap<>();
+        try (ResultSet rs = md.getIndexInfo(table.catalog(), table.schema(), name, true, false)) {
+            while (rs.next()) {
+                String column = rs.getString("COLUMN_NAME");
+                if (column == null) continue;                 // tableIndexStatistic row
+                byIndex.computeIfAbsent(rs.getString("INDEX_NAME"), k -> new ArrayList<>())
+                        .add(key(column));
+            }
+        }
+        keys.addAll(byIndex.values());
+        return keys;
     }
 
     /**

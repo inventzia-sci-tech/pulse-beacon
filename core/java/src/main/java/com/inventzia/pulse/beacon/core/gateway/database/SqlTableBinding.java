@@ -61,8 +61,13 @@ public final class SqlTableBinding {
      * cannot repair that — it faithfully preserves whatever order the source gave it. The tuple always
      * begins with the routing time column, so paging and ordering agree.
      *
-     * @throws IllegalArgumentException if the tuple does not start with the routing time column, or
-     *                                  names a column that is not in the mapping
+     * <p>Columns beyond the first need not belong to the datum. {@link IngestionId#COLUMN} is the
+     * usual final tiebreak: it is unique per event by construction, where the datum's own fields may
+     * legitimately repeat — two ticks for one instrument in the same millisecond are real data, not a
+     * schema mistake. {@link TableValidator} confirms the tuple is actually unique before a replay.
+     *
+     * @throws IllegalArgumentException if the tuple is empty, does not start with the routing time
+     *                                  column, or repeats a column
      */
     public SqlTableBinding withOrderingColumns(List<String> columns) {
         Objects.requireNonNull(columns, "columns");
@@ -75,13 +80,10 @@ public final class SqlTableBinding {
                     "the ordering tuple must begin with the routing time column '" + timeColumn
                     + "', got '" + columns.get(0) + "'");
         }
-        for (String c : columns) {
-            boolean known = mapping.columns().stream().anyMatch(m -> m.columnName().equals(c));
-            if (!known) {
-                throw new IllegalArgumentException(
-                        "ordering column '" + c + "' is not a column of " + mapping.typeId());
-            }
-        }
+        // Columns outside the datum are allowed after the first, and are often exactly what makes
+        // the tuple unique: the ingestion id is a per-event identity, where the datum's own fields
+        // may legitimately repeat. Two events can share a key and a millisecond; that is real market
+        // data, not a schema mistake. The validator confirms such a column exists and is non-null.
         if (columns.stream().distinct().count() != columns.size()) {
             throw new IllegalArgumentException("the ordering tuple must not repeat a column: " + columns);
         }
@@ -97,6 +99,17 @@ public final class SqlTableBinding {
 
     /** Whether this binding can drive a reproducible replay. */
     public boolean isReplayable() { return !orderingColumns.isEmpty(); }
+
+    /**
+     * Ordering columns that are not fields of the datum — typically {@link IngestionId#COLUMN}.
+     *
+     * <p>They must still be selected, because the paging cursor reads its resume point from them.
+     */
+    public List<String> auxiliaryOrderingColumns() {
+        return orderingColumns.stream()
+                .filter(c -> mapping.columns().stream().noneMatch(m -> m.columnName().equals(c)))
+                .toList();
+    }
 
     @Override
     public String toString() {
