@@ -23,6 +23,10 @@ import java.util.List;
  * produced it.
  */
 public class UnsupportedMappingException extends RuntimeException {
+    /** Serialised only if a caller chooses to; fixed so a future field cannot silently
+     *  change the identity of an already-serialised instance. */
+    private static final long serialVersionUID = 1L;
+
 
     private final String typeId;
     private final List<String> reasons;

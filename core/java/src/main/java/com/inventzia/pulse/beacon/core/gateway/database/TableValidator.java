@@ -45,15 +45,41 @@ public final class TableValidator {
     private TableValidator() {}
 
     /** One column as the database actually describes it. */
+    /**
+     * @param decimalDigits the reported scale, or {@code null} when the driver does not report one —
+     *                      which is <em>not</em> the same as zero. Connector/J reports {@code null} for
+     *                      {@code DATETIME}, and reading that as zero made this validator reject a
+     *                      perfectly correct {@code datetime(3)} column.
+     */
     public record ActualColumn(String name, JDBCType jdbcType, String typeName,
-                               int size, int decimalDigits,
+                               int size, Integer decimalDigits,
                                boolean nullable, boolean hasDefault, boolean generated) {
+
+        /** The scale if reported, else 0 — for callers that only need a number. */
+        public int scaleOrZero() {
+            return decimalDigits == null ? 0 : decimalDigits;
+        }
+
+        /**
+         * Fractional-second digits for a timestamp column.
+         *
+         * <p>Taken from the reported scale where there is one. Where there is not, derived from the column
+         * size: a {@code DATETIME} renders as {@code yyyy-MM-dd HH:mm:ss} in 19 characters, and each
+         * fractional digit adds one more plus the decimal point — so size 23 means three. Guessing is
+         * avoided; this is arithmetic on what the driver does report.
+         */
+        public int fractionalSecondDigits() {
+            if (decimalDigits != null) return decimalDigits;
+            return size > 20 ? size - 20 : 0;
+        }
 
         /** Whether a row can be inserted without ever mentioning this column. */
         public boolean isOmittableOnInsert() {
             return nullable || hasDefault || generated;
         }
     }
+
+
 
     /** What a validation found. Empty {@link #problems()} means the table is usable. */
     public record Result(QualifiedTableName table, String role, List<String> problems,
@@ -74,10 +100,21 @@ public final class TableValidator {
      * Validate for reading. Extra columns are ignored — the source selects by name.
      */
     public static Result validateForSource(Connection c, SqlTableBinding binding) throws SQLException {
+        return validateForSource(c, binding, new GenericSqlDialect());
+    }
+
+    /**
+     * Validate for reading, honouring the dialect's storage conventions.
+     *
+     * <p>The dialect matters because what counts as a compatible column is engine-specific: engines differ
+     * in which JDBC types they report for the same declared column.
+     */
+    public static Result validateForSource(Connection c, SqlTableBinding binding, SqlDialect dialect)
+            throws SQLException {
         Map<String, ActualColumn> actual = describe(c, binding.table());
         List<String> problems = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
-        checkDatumColumns(binding, actual, problems);
+        checkDatumColumns(binding, actual, problems, dialect);
 
         if (!binding.isReplayable()) {
             problems.add("no stable ordering tuple: ORDER BY the time column alone is not a total"
@@ -112,10 +149,16 @@ public final class TableValidator {
      * be omittable.
      */
     public static Result validateForSink(Connection c, SqlTableBinding binding) throws SQLException {
+        return validateForSink(c, binding, new GenericSqlDialect());
+    }
+
+    /** Validate for writing, honouring the dialect's storage conventions. */
+    public static Result validateForSink(Connection c, SqlTableBinding binding, SqlDialect dialect)
+            throws SQLException {
         Map<String, ActualColumn> actual = describe(c, binding.table());
         List<String> problems = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
-        checkDatumColumns(binding, actual, problems);
+        checkDatumColumns(binding, actual, problems, dialect);
 
         for (ActualColumn col : actual.values()) {
             boolean written = binding.mapping().columns().stream()
@@ -132,14 +175,14 @@ public final class TableValidator {
 
     /** Every datum field must be present, and a routing field must additionally be non-null. */
     private static void checkDatumColumns(SqlTableBinding binding, Map<String, ActualColumn> actual,
-                                          List<String> problems) {
+                                          List<String> problems, SqlDialect dialect) {
         for (ColumnMapping m : binding.mapping().columns()) {
             ActualColumn col = actual.get(key(m.columnName()));
             if (col == null) {
                 problems.add("column '" + m.columnName() + "' is missing");
                 continue;
             }
-            if (!isCompatible(m, col)) {
+            if (!dialect.columnCanHold(m, col)) {
                 problems.add("column '" + m.columnName() + "' is " + col.typeName()
                         + " but " + m.fieldName() + " needs " + m.type()
                         + (m.type().needsPrecision()
@@ -150,7 +193,7 @@ public final class TableValidator {
             // perfectly good DECIMAL and will still round a scale-12 value on the way in - which is
             // the very loss the DECIMAL/DOUBLE distinction exists to prevent, arriving by another
             // route. The driver reports precision and scale, so there is no excuse for not checking.
-            String tooNarrow = tooNarrowFor(m, col);
+            String tooNarrow = tooNarrowFor(m, col, dialect);
             if (tooNarrow != null) {
                 problems.add("column '" + m.columnName() + "' is " + describe(col)
                         + " but " + m.fieldName() + " needs " + tooNarrow
@@ -163,31 +206,6 @@ public final class TableValidator {
         }
     }
 
-    /**
-     * Whether a column can carry a logical type without losing it.
-     *
-     * <p>Deliberately strict about {@code DECIMAL}: a decimal field in a {@code DOUBLE} column is the
-     * exact loss the storage mapping exists to prevent, and it would pass any check that only asked
-     * "is it numeric". The reverse — a double field in a decimal column — is allowed, since it loses
-     * nothing.
-     */
-    private static boolean isCompatible(ColumnMapping m, ActualColumn col) {
-        return switch (m.type()) {
-            case TEXT      -> is(col, JDBCType.VARCHAR, JDBCType.CHAR, JDBCType.LONGVARCHAR,
-                                 JDBCType.NVARCHAR, JDBCType.NCHAR, JDBCType.LONGNVARCHAR,
-                                 JDBCType.CLOB, JDBCType.NCLOB);
-            case INT64     -> is(col, JDBCType.BIGINT, JDBCType.NUMERIC, JDBCType.DECIMAL);
-            case INT32     -> is(col, JDBCType.INTEGER, JDBCType.SMALLINT, JDBCType.BIGINT,
-                                 JDBCType.NUMERIC, JDBCType.DECIMAL);
-            case DECIMAL   -> is(col, JDBCType.DECIMAL, JDBCType.NUMERIC);
-            case DOUBLE    -> is(col, JDBCType.DOUBLE, JDBCType.FLOAT, JDBCType.REAL,
-                                 JDBCType.DECIMAL, JDBCType.NUMERIC);
-            case BOOLEAN   -> is(col, JDBCType.BOOLEAN, JDBCType.BIT, JDBCType.TINYINT,
-                                 JDBCType.SMALLINT);
-            case TIMESTAMP_UTC -> is(col, JDBCType.TIMESTAMP, JDBCType.TIMESTAMP_WITH_TIMEZONE);
-            case DATE      -> is(col, JDBCType.DATE);
-        };
-    }
 
     /**
      * Whether the column can represent everything the mapping can, or {@code null} if it can.
@@ -196,13 +214,13 @@ public final class TableValidator {
      * the digits before it (precision minus scale). A column can be wider overall and still lose the
      * fractional digits that matter.
      */
-    private static String tooNarrowFor(ColumnMapping m, ActualColumn col) {
+    private static String tooNarrowFor(ColumnMapping m, ActualColumn col, SqlDialect dialect) {
         switch (m.type()) {
             case DECIMAL -> {
                 int neededScale    = m.scale();
                 int neededIntegral = m.precision() - m.scale();
-                int actualScale    = col.decimalDigits();
-                int actualIntegral = col.size() - col.decimalDigits();
+                int actualScale    = col.scaleOrZero();
+                int actualIntegral = col.size() - col.scaleOrZero();
                 if (actualScale < neededScale || actualIntegral < neededIntegral) {
                     return "DECIMAL(" + m.precision() + "," + m.scale() + ")";
                 }
@@ -211,18 +229,18 @@ public final class TableValidator {
                 // Only meaningful when a 64-bit integer landed in a NUMERIC column; a real BIGINT
                 // reports its own width and needs no check.
                 if (col.jdbcType() == JDBCType.NUMERIC || col.jdbcType() == JDBCType.DECIMAL) {
-                    if (col.decimalDigits() > 0 || col.size() < 19) return "19 integer digits";
+                    if (col.scaleOrZero() > 0 || col.size() < 19) return "19 integer digits";
                 }
             }
             case INT32 -> {
                 if (col.jdbcType() == JDBCType.NUMERIC || col.jdbcType() == JDBCType.DECIMAL) {
-                    if (col.decimalDigits() > 0 || col.size() < 10) return "10 integer digits";
+                    if (col.scaleOrZero() > 0 || col.size() < 10) return "10 integer digits";
                 }
             }
             case TIMESTAMP_UTC -> {
                 // The routing time is epoch millis, and a payload timestamp is held to the same
                 // resolution. A TIMESTAMP(0) column would drop the milliseconds without a word.
-                if (col.decimalDigits() < MILLISECOND_DIGITS) {
+                if (col.fractionalSecondDigits() < MILLISECOND_DIGITS) {
                     return "TIMESTAMP(" + MILLISECOND_DIGITS + ")";
                 }
             }
@@ -236,18 +254,13 @@ public final class TableValidator {
 
     private static String describe(ActualColumn col) {
         return switch (col.jdbcType()) {
-            case DECIMAL, NUMERIC -> col.typeName() + "(" + col.size() + "," + col.decimalDigits() + ")";
-            case TIMESTAMP, TIMESTAMP_WITH_TIMEZONE -> col.typeName() + "(" + col.decimalDigits() + ")";
+            case DECIMAL, NUMERIC -> col.typeName() + "(" + col.size() + "," + col.scaleOrZero() + ")";
+            case TIMESTAMP, TIMESTAMP_WITH_TIMEZONE ->
+                    col.typeName() + "(" + col.fractionalSecondDigits() + ")";
             default -> col.typeName();
         };
     }
 
-    private static boolean is(ActualColumn col, JDBCType... accepted) {
-        for (JDBCType t : accepted) {
-            if (col.jdbcType() == t) return true;
-        }
-        return false;
-    }
 
     /**
      * Whether some declared primary key or unique index is a subset of the ordering tuple.
@@ -265,6 +278,24 @@ public final class TableValidator {
                 .map(TableValidator::key).collect(java.util.stream.Collectors.toSet());
         for (List<String> unique : declaredUniqueKeys(c, binding.table())) {
             if (!unique.isEmpty() && tuple.containsAll(unique)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Whether {@code (key, time)} is covered by a declared unique constraint.
+     *
+     * <p>What the natural-key upsert conflicts against. Asked of the catalog, because an upsert with no
+     * matching constraint does not fail — it inserts, and the duplicate appears silently.
+     */
+    public static boolean naturalKeyIsUnique(Connection c, SqlTableBinding binding)
+            throws SQLException {
+        Set<String> natural = Set.of(key(binding.mapping().keyColumn().columnName()),
+                                     key(binding.mapping().timeColumn().columnName()));
+        for (List<String> unique : declaredUniqueKeys(c, binding.table())) {
+            if (!unique.isEmpty() && natural.containsAll(unique)) {
                 return true;
             }
         }
@@ -351,7 +382,9 @@ public final class TableValidator {
                 columns.put(key(name), new ActualColumn(name, type,
                         rs.getString("TYPE_NAME"),
                         rs.getInt("COLUMN_SIZE"),
-                        rs.getInt("DECIMAL_DIGITS"),
+                        // Read as an object: getInt would turn "not reported" into 0, which is how a
+                        // correct datetime(3) came to be rejected for lacking milliseconds.
+                        (Integer) rs.getObject("DECIMAL_DIGITS"),
                         rs.getInt("NULLABLE") == DatabaseMetaData.columnNullable,
                         rs.getString("COLUMN_DEF") != null,
                         "YES".equalsIgnoreCase(rs.getString("IS_GENERATEDCOLUMN"))));

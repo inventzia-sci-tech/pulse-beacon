@@ -43,4 +43,26 @@ public class H2Dialect extends GenericSqlDialect {
      *  on PostgreSQL, where a long snapshot blocks vacuum. */
     @Override
     public boolean supportsReplaySnapshot() { return true; }
+
+    /**
+     * H2 spells the upsert {@code MERGE INTO ... KEY (...)}.
+     *
+     * <p>It accepts neither the standard {@code ON CONFLICT ... DO UPDATE} nor MySQL's
+     * {@code ON DUPLICATE KEY UPDATE} — verified, not assumed, because an unsupported upsert does not
+     * merely fail: under an observational policy the batch is counted as not-committed and the load
+     * quietly writes nothing.
+     */
+    @Override
+    public String upsertStatement(SqlTableBinding binding) {
+        java.util.List<String> columns = new java.util.ArrayList<>();
+        for (ColumnMapping c : binding.mapping().columns()) columns.add(quote(c.columnName()));
+        columns.add(quote(IngestionId.COLUMN));
+        String placeholders = String.join(", ", java.util.Collections.nCopies(columns.size(), "?"));
+
+        return "MERGE INTO " + qualify(binding.table())
+               + " (" + String.join(", ", columns) + ")"
+               + " KEY (" + quote(binding.mapping().keyColumn().columnName())
+               + ", " + quote(binding.mapping().timeColumn().columnName()) + ")"
+               + " VALUES (" + placeholders + ")";
+    }
 }

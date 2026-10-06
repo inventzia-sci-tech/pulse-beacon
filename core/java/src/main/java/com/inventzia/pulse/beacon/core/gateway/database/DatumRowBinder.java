@@ -56,6 +56,10 @@ public final class DatumRowBinder {
 
     /** A value the column cannot hold exactly. */
     public static class ValueOutOfRangeException extends RuntimeException {
+        /** Serialised only if a caller chooses to; fixed so a future field cannot silently
+         *  change the identity of an already-serialised instance. */
+        private static final long serialVersionUID = 1L;
+
         public ValueOutOfRangeException(String message) { super(message); }
     }
 

@@ -108,7 +108,7 @@ public class SqlSourceGateway<P extends Datum> extends AbstractGateway {
     public void validate() throws SQLException {
         new TableRegistry(dataSource).requireReady(binding);
         try (Connection c = dataSource.getConnection()) {
-            TableValidator.validateForSource(c, binding).orThrow();
+            TableValidator.validateForSource(c, binding, dialect).orThrow();
         }
     }
 
@@ -212,6 +212,10 @@ public class SqlSourceGateway<P extends Datum> extends AbstractGateway {
 
     /** The paging cursor did not move, so reading on would repeat the same page forever. */
     public static class NonAdvancingCursorException extends RuntimeException {
+        /** Serialised only if a caller chooses to; fixed so a future field cannot silently
+         *  change the identity of an already-serialised instance. */
+        private static final long serialVersionUID = 1L;
+
         public NonAdvancingCursorException(String gateway, List<String> ordering, List<Object> at) {
             super(gateway + ": the paging cursor did not advance past " + at + " on ordering tuple "
                   + ordering + "; the tuple is not unique, or the page comparison is wrong."
@@ -270,6 +274,10 @@ public class SqlSourceGateway<P extends Datum> extends AbstractGateway {
 
     /** The replay did not read every row the window contained. */
     public static class IncompleteReplayException extends RuntimeException {
+        /** Serialised only if a caller chooses to; fixed so a future field cannot silently
+         *  change the identity of an already-serialised instance. */
+        private static final long serialVersionUID = 1L;
+
         public IncompleteReplayException(String gateway, List<String> ordering,
                                          long fetched, long expected) {
             super(gateway + ": replayed " + fetched + " of " + expected + " rows. The ordering tuple "

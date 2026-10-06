@@ -61,6 +61,10 @@ public final class DatumRowReader<P extends Datum> {
 
     /** A row is not what the binding says it is. */
     public static class CorruptRowException extends RuntimeException {
+        /** Serialised only if a caller chooses to; fixed so a future field cannot silently
+         *  change the identity of an already-serialised instance. */
+        private static final long serialVersionUID = 1L;
+
         public CorruptRowException(String message) { super(message); }
     }
 

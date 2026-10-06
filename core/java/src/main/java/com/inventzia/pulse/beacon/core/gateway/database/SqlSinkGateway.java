@@ -82,6 +82,9 @@ public class SqlSinkGateway extends AbstractGateway {
     /** How long the engine's shutdown barrier waits for the writer to drain. */
     private volatile long drainTimeoutMillis = DEFAULT_DRAIN_TIMEOUT_MILLIS;
 
+    /** Append by default: the mode that cannot silently overwrite anything. */
+    private volatile WriteMode writeMode = WriteMode.APPEND;
+
     private final AtomicLong sequence = new AtomicLong();
 
     /** Writer-thread only. Replaced whenever its state can no longer be reasoned about. */
@@ -139,7 +142,17 @@ public class SqlSinkGateway extends AbstractGateway {
     public void validate() throws SQLException {
         new TableRegistry(dataSource).requireReady(binding);
         try (Connection c = dataSource.getConnection()) {
-            TableValidator.validateForSink(c, binding).orThrow();
+            TableValidator.validateForSink(c, binding, dialect).orThrow();
+            if (writeMode.needsNaturalKeyConstraint()
+                    && !TableValidator.naturalKeyIsUnique(c, binding)) {
+                // Without the constraint the upsert has nothing to conflict against and degrades to an
+                // append: re-running would duplicate exactly as before, and nothing would say so.
+                throw new BindingMismatchException(binding.table(),
+                        "\n  - " + WriteMode.UPSERT_ON_NATURAL_KEY + " needs a unique constraint on ("
+                        + binding.mapping().keyColumn().columnName() + ", "
+                        + binding.mapping().timeColumn().columnName() + "), and the table has none."
+                        + " Without it the upsert would silently become an append.");
+            }
         }
     }
 
@@ -289,7 +302,7 @@ public class SqlSinkGateway extends AbstractGateway {
         }
 
         int rejected = 0;
-        try (PreparedStatement ps = c.prepareStatement(dialect.insertStatement(binding))) {
+        try (PreparedStatement ps = c.prepareStatement(writeStatement())) {
             for (Pending p : batch) {
                 try {
                     rowBinder.bind(ps, p.payload(), p.ingestionId());
@@ -422,7 +435,7 @@ public class SqlSinkGateway extends AbstractGateway {
 
     /** Insert exactly these rows and commit them. */
     private void insertAndCommit(Connection c, List<Pending> rows) throws SQLException {
-        try (PreparedStatement ps = c.prepareStatement(dialect.insertStatement(binding))) {
+        try (PreparedStatement ps = c.prepareStatement(writeStatement())) {
             for (Pending p : rows) {
                 rowBinder.bind(ps, p.payload(), p.ingestionId());
                 ps.addBatch();
@@ -536,8 +549,13 @@ public class SqlSinkGateway extends AbstractGateway {
             }
         }
         if (!terminated) {
+            // Still working, not necessarily lost - the writer may yet commit these. But the engine
+            // cannot wait indefinitely, and a run whose sink had not finished must not be called
+            // complete. Said precisely, because "unaccounted for" would overstate it.
             markFailed("did not finish draining within " + drainTimeoutMillis + "ms; "
-                       + queue.size() + " events are unaccounted for", null);
+                       + queue.size() + " events were still outstanding when the run had to end"
+                       + " (raise the drain timeout, or the batch size, if the database is remote)",
+                       null);
         }
     }
 
@@ -569,5 +587,28 @@ public class SqlSinkGateway extends AbstractGateway {
     /** How long the engine's shutdown barrier will wait for this sink to drain. */
     public void setDrainTimeoutMillis(long millis) {
         this.drainTimeoutMillis = Math.max(1, millis);
+    }
+
+    /**
+     * Append, or converge on the natural key so re-running the same input does not duplicate it.
+     *
+     * <p>Call before {@code run()}. {@link WriteMode#UPSERT_ON_NATURAL_KEY} needs the unique constraint
+     * on {@code (key, time)}; {@link #validate()} checks for it rather than letting the upsert quietly
+     * degrade to an append.
+     */
+    public void setWriteMode(WriteMode mode) {
+        this.writeMode = Objects.requireNonNull(mode, "mode");
+    }
+
+    /** How this sink writes a row that may already exist. */
+    public WriteMode writeMode() {
+        return writeMode;
+    }
+
+    /** The statement this sink issues, which depends on the write mode. */
+    private String writeStatement() {
+        return writeMode == WriteMode.UPSERT_ON_NATURAL_KEY
+                ? dialect.upsertStatement(binding)
+                : dialect.insertStatement(binding);
     }
 }

@@ -22,8 +22,15 @@ import java.util.List;
  */
 public class GenericSqlDialect implements SqlDialect {
 
-    /** Text columns get an explicit length, because some engines require one. */
-    protected static final int DEFAULT_TEXT_LENGTH = 512;
+    /**
+     * Length for a text column, because some engines require one and the schema declares none.
+     *
+     * <p>255 and not more, for a reason found on a real server: under {@code utf8mb4} MySQL counts four
+     * bytes per character toward its 3072-byte index limit, so a 512-character column costs 2KB in every
+     * index that contains it. A composite ordering index over two such columns is then rejected outright.
+     * 255 is the conventional safe width and leaves room for the ordering tuple.
+     */
+    protected static final int DEFAULT_TEXT_LENGTH = 255;
 
     @Override
     public String name() { return "generic"; }

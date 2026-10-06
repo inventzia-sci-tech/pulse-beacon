@@ -11,7 +11,6 @@
  */
 package com.inventzia.pulse.beacon.core;
 
-import com.inventzia.pulse.data.datum.Datum;
 import com.inventzia.pulse.data.datum.DatumCodec;
 import com.inventzia.pulse.data.datum.DatumTypeBinding;
 import com.inventzia.pulse.data.datum.DatumTypeProvider;

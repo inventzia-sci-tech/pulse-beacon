@@ -20,6 +20,10 @@ package com.inventzia.pulse.beacon.core.gateway.database;
  * the table or fix the binding.
  */
 public class BindingMismatchException extends RuntimeException {
+    /** Serialised only if a caller chooses to; fixed so a future field cannot silently
+     *  change the identity of an already-serialised instance. */
+    private static final long serialVersionUID = 1L;
+
 
     private final QualifiedTableName table;
 

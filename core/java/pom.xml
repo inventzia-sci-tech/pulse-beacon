@@ -74,6 +74,7 @@
         <junit.version>5.11.4</junit.version>
         <assertj.version>3.27.2</assertj.version>
         <h2.version>2.3.232</h2.version>
+        <mysql.version>9.7.0</mysql.version>
         <pulse-data.version>0.4.0-SNAPSHOT</pulse-data.version>
     </properties>
 
@@ -139,6 +140,18 @@
             isolation, so a test that passes here is testing something. It keeps CI fast; only a real
             production engine proves the guarantees end to end.
         -->
+        <!--
+            MySQL driver for the SQL gateway examples, and for validating the gateways against a real
+            production engine - which is the only thing that actually proves the guarantees, since an
+            embedded database can accept identical DDL and behave differently. Optional: on this
+            module's classpath so the examples run, not imposed on anything depending on pulse-beacon.
+        -->
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <version>${mysql.version}</version>
+            <optional>true</optional>
+        </dependency>
         <dependency>
             <groupId>com.h2database</groupId>
             <artifactId>h2</artifactId>

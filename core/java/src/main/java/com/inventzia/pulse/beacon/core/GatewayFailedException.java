@@ -21,6 +21,10 @@ package com.inventzia.pulse.beacon.core;
  * <p>See {@code docs/pulse-sql-gateway.md} §8.
  */
 public class GatewayFailedException extends Exception {
+    /** Serialised only if a caller chooses to; fixed so a future field cannot silently
+     *  change the identity of an already-serialised instance. */
+    private static final long serialVersionUID = 1L;
+
 
     public GatewayFailedException(String message) {
         super("run failed because a gateway failed: " + message);

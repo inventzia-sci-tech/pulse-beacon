@@ -205,6 +205,66 @@ public final class TableRegistry {
     }
 
     /**
+     * Resolve a half-finished provisioning, which is the state §5 exists to make recoverable.
+     *
+     * <p>Two shapes, and they resolve differently:
+     * <ul>
+     *   <li><b>A {@code provisioning} row with no table.</b> The previous attempt died before or during
+     *       {@code CREATE TABLE} — which is exactly what happens when a managed MySQL refuses the DDL for
+     *       requiring a primary key. Nothing was created, so the row is removed and provisioning can start
+     *       cleanly.</li>
+     *   <li><b>A {@code provisioning} row with a table.</b> The table was created and the run died before
+     *       marking it ready. The table is checked against the binding first: if it matches it is marked
+     *       {@code ready}, and if it does not it is left alone, because silently adopting a table that is
+     *       not what we expect is the one outcome worse than refusing.</li>
+     * </ul>
+     *
+     * <p>Privileged, like the rest of provisioning. Does nothing to a row that is already {@code ready}.
+     *
+     * @return a description of what it did, or empty if there was nothing to resolve
+     */
+    public Optional<String> resolveProvisioning(SqlTableBinding binding) throws SQLException {
+        QualifiedTableName table = binding.table();
+        Optional<TableRegistration> row = lookup(table);
+        if (row.isEmpty() || row.get().state() == ProvisioningState.READY) {
+            return Optional.empty();
+        }
+        boolean exists;
+        try (Connection c = dataSource.getConnection()) {
+            exists = tableExists(c, table);
+        }
+        if (!exists) {
+            deleteRegistration(table);
+            return Optional.of("removed a '" + ProvisioningState.PROVISIONING.stored()
+                    + "' row for " + table.qualified() + ", which has no table; it can be provisioned"
+                    + " again");
+        }
+        String expected = fingerprintOf(binding.mapping().typeId());
+        if (!row.get().matches(binding.mapping(), expected)) {
+            throw new BindingMismatchException(table,
+                    "\n  - it is '" + ProvisioningState.PROVISIONING.stored() + "' and the table exists,"
+                    + " but the registration does not describe this binding, so it will not be adopted:"
+                    + row.get().describeMismatch(binding.mapping(), expected));
+        }
+        markReady(table);
+        return Optional.of("marked " + table.qualified() + " ready; it existed but provisioning had not"
+                + " finished");
+    }
+
+    /** Remove a registration. Privileged, and only sound when the table it names does not exist. */
+    public void deleteRegistration(QualifiedTableName table) throws SQLException {
+        String sql = "DELETE FROM " + REGISTRY_TABLE
+                   + " WHERE catalog_name = ? AND schema_name = ? AND table_name = ?";
+        try (Connection c = dataSource.getConnection();
+             PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, orAbsent(table.catalog()));
+            ps.setString(2, orAbsent(table.schema()));
+            ps.setString(3, table.table());
+            ps.executeUpdate();
+        }
+    }
+
+    /**
      * Adopt a table that already exists but was never registered, recording the binding as {@code ready}.
      *
      * <p>The migration path, and an explicit act on purpose. The alternative — inferring the binding

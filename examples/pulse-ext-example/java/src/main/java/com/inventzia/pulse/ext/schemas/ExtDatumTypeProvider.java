@@ -18,7 +18,6 @@ package com.inventzia.pulse.ext.schemas;
 
 import com.inventzia.pulse.data.datum.DatumTypeBinding;
 import com.inventzia.pulse.data.datum.DatumTypeProvider;
-import com.inventzia.pulse.ext.schemas.ExtendedBar;
 import java.util.Collection;
 import java.util.List;
 import java.util.Optional;

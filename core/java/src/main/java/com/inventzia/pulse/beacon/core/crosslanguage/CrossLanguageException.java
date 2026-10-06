@@ -13,6 +13,10 @@ package com.inventzia.pulse.beacon.core.crosslanguage;
 
 /** Unchecked exception thrown by the cross-language gateways when the bridge fails. */
 public class CrossLanguageException extends RuntimeException {
+    /** Serialised only if a caller chooses to; fixed so a future field cannot silently
+     *  change the identity of an already-serialised instance. */
+    private static final long serialVersionUID = 1L;
+
 
     public CrossLanguageException(String message) {
         super(message);

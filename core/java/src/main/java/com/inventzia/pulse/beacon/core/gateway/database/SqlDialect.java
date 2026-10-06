@@ -52,6 +52,48 @@ public interface SqlDialect {
     }
 
     /**
+     * Whether a column can carry a logical type without losing it.
+     *
+     * <p>On the dialect because the answer is engine-specific. The default reads the JDBC type code,
+     * which is right wherever that code describes the declared type; an engine where it does not
+     * overrides this.
+     *
+     * <p>Deliberately strict about {@code DECIMAL}: a decimal field in a floating-point column is the
+     * exact loss the storage mapping exists to prevent, and it would pass any check that only asked
+     * "is it numeric". The reverse — a double in a decimal column — is fine, since it loses nothing.
+     */
+    default boolean columnCanHold(ColumnMapping m, TableValidator.ActualColumn col) {
+        return switch (m.type()) {
+            case TEXT      -> isAnyOf(col, java.sql.JDBCType.VARCHAR, java.sql.JDBCType.CHAR,
+                                java.sql.JDBCType.LONGVARCHAR, java.sql.JDBCType.NVARCHAR,
+                                java.sql.JDBCType.NCHAR, java.sql.JDBCType.LONGNVARCHAR,
+                                java.sql.JDBCType.CLOB, java.sql.JDBCType.NCLOB);
+            case INT64     -> isAnyOf(col, java.sql.JDBCType.BIGINT, java.sql.JDBCType.NUMERIC,
+                                java.sql.JDBCType.DECIMAL);
+            case INT32     -> isAnyOf(col, java.sql.JDBCType.INTEGER, java.sql.JDBCType.SMALLINT,
+                                java.sql.JDBCType.BIGINT, java.sql.JDBCType.NUMERIC,
+                                java.sql.JDBCType.DECIMAL);
+            case DECIMAL   -> isAnyOf(col, java.sql.JDBCType.DECIMAL, java.sql.JDBCType.NUMERIC);
+            case DOUBLE    -> isAnyOf(col, java.sql.JDBCType.DOUBLE, java.sql.JDBCType.FLOAT,
+                                java.sql.JDBCType.REAL, java.sql.JDBCType.DECIMAL,
+                                java.sql.JDBCType.NUMERIC);
+            case BOOLEAN   -> isAnyOf(col, java.sql.JDBCType.BOOLEAN, java.sql.JDBCType.BIT,
+                                java.sql.JDBCType.TINYINT, java.sql.JDBCType.SMALLINT);
+            case TIMESTAMP_UTC -> isAnyOf(col, java.sql.JDBCType.TIMESTAMP,
+                                java.sql.JDBCType.TIMESTAMP_WITH_TIMEZONE);
+            case DATE      -> isAnyOf(col, java.sql.JDBCType.DATE);
+        };
+    }
+
+    /** Whether the column's JDBC type is one of these. */
+    default boolean isAnyOf(TableValidator.ActualColumn col, java.sql.JDBCType... accepted) {
+        for (java.sql.JDBCType t : accepted) {
+            if (col.jdbcType() == t) return true;
+        }
+        return false;
+    }
+
+    /**
      * Whether this engine can derive a UTC timestamp column from the epoch-millis time column as a
      * <em>generated</em> column.
      *
@@ -126,14 +168,20 @@ public interface SqlDialect {
         for (ColumnMapping c : mapping.columns()) {
             parts.add(quote(c.columnName()) + ' ' + columnType(c) + (c.nullable() ? "" : " NOT NULL"));
         }
-        // The retry identity. Unique, because that is what turns a failed retry into proof.
+        // The retry identity, and the row's identity: unique per event by construction, which is what
+        // turns a failed retry into proof.
         parts.add(quote(IngestionId.COLUMN) + " VARCHAR(320) NOT NULL");
         if (supportsDerivedTimestamp()) {
             parts.add(quote(derivedTimestampColumn()) + " TIMESTAMP(3) GENERATED ALWAYS AS ("
                       + derivedTimestampExpression(quote(mapping.timeColumn().columnName())) + ")");
         }
-        parts.add("CONSTRAINT " + quote(uniqueConstraintName(binding))
-                  + " UNIQUE (" + quote(IngestionId.COLUMN) + ')');
+        // PRIMARY KEY rather than a secondary UNIQUE index. Three reasons, in order of weight:
+        // managed MySQL commonly runs with sql_require_primary_key=ON and refuses a table without one
+        // (Aiven does, and that is where this was found); the ingestion id genuinely IS the row's
+        // identity in this model, so a surrogate would be inventing a second one; and it saves an index,
+        // since a primary key is already unique and that uniqueness is what the retry proof rests on.
+        parts.add("CONSTRAINT " + quote(primaryKeyName(binding))
+                  + " PRIMARY KEY (" + quote(IngestionId.COLUMN) + ')');
         return "CREATE TABLE " + qualify(binding.table()) + " (\n  "
                + String.join(",\n  ", parts) + "\n)";
     }
@@ -224,11 +272,67 @@ public interface SqlDialect {
                + " WHERE " + time + " >= ? AND " + time + " <= ?";
     }
 
+    /**
+     * An insert that converges instead of duplicating: the <b>natural-key upsert</b> of §7.
+     *
+     * <p>Deliberately distinct from the ingestion identity. The ingestion id makes a <em>retry</em>
+     * safe within one run; this makes <em>re-running</em> safe across runs. Loading the same file twice
+     * must not double the data, and the business key plus the event time is what identifies "the same
+     * bar" — whereas the ingestion id is different on every run by construction, so it cannot.
+     *
+     * <p>Opt-in, because it is not always correct: where two genuinely distinct events can share a key
+     * and an event time, this would overwrite one with the other. See §7 on why the two mechanisms are
+     * separate and both needed.
+     *
+     * <p>Requires the unique constraint from {@link #createNaturalKeyConstraintStatement}.
+     */
+    default String upsertStatement(SqlTableBinding binding) {
+        List<String> columns = new ArrayList<>();
+        for (ColumnMapping c : binding.mapping().columns()) columns.add(quote(c.columnName()));
+        columns.add(quote(IngestionId.COLUMN));
+        String placeholders = String.join(", ", java.util.Collections.nCopies(columns.size(), "?"));
+
+        String key  = quote(binding.mapping().keyColumn().columnName());
+        String time = quote(binding.mapping().timeColumn().columnName());
+        // Everything except the natural key itself is refreshed; the key columns are what matched.
+        List<String> updates = new ArrayList<>();
+        for (ColumnMapping c : binding.mapping().columns()) {
+            if (c.role() == ColumnMapping.Role.VALUE) {
+                String col = quote(c.columnName());
+                updates.add(col + " = excluded." + col);
+            }
+        }
+        updates.add(quote(IngestionId.COLUMN) + " = excluded." + quote(IngestionId.COLUMN));
+
+        return "INSERT INTO " + qualify(binding.table())
+               + " (" + String.join(", ", columns) + ") VALUES (" + placeholders + ")"
+               + " ON CONFLICT (" + key + ", " + time + ") DO UPDATE SET "
+               + String.join(", ", updates);
+    }
+
+    /**
+     * The unique constraint the natural-key upsert matches on: business key plus event time.
+     *
+     * <p>Without it the upsert has nothing to conflict against and simply inserts, so re-running would
+     * duplicate exactly as before — silently, which is the worst form.
+     */
+    default String createNaturalKeyConstraintStatement(SqlTableBinding binding) {
+        return "CREATE UNIQUE INDEX " + quote(naturalKeyConstraintName(binding))
+               + " ON " + qualify(binding.table())
+               + " (" + quote(binding.mapping().keyColumn().columnName())
+               + ", " + quote(binding.mapping().timeColumn().columnName()) + ")";
+    }
+
+    /** The natural-key constraint's name. */
+    default String naturalKeyConstraintName(SqlTableBinding binding) {
+        return "uq_" + binding.table().table() + "_natural";
+    }
+
     /** The name of the derived timestamp column, where one exists. */
     default String derivedTimestampColumn() { return "_pulse_event_time_utc"; }
 
-    /** The unique constraint name carrying the ingestion identity. */
-    default String uniqueConstraintName(SqlTableBinding binding) {
-        return "uq_" + binding.table().table() + "_pulse_ingestion";
+    /** The primary key name carrying the ingestion identity. */
+    default String primaryKeyName(SqlTableBinding binding) {
+        return "pk_" + binding.table().table() + "_pulse_ingestion";
     }
 }

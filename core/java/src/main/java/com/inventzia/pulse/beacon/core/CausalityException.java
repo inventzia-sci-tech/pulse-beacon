@@ -21,6 +21,10 @@ package com.inventzia.pulse.beacon.core;
  * future events are permitted; only strictly-earlier publishes are rejected.
  */
 public class CausalityException extends RuntimeException {
+    /** Serialised only if a caller chooses to; fixed so a future field cannot silently
+     *  change the identity of an already-serialised instance. */
+    private static final long serialVersionUID = 1L;
+
 
     public CausalityException(String message) {
         super(message);

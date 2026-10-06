@@ -16,6 +16,10 @@ package com.inventzia.pulse.beacon.core.gateway.file;
  * {@link JsonlWriterGateway} when a JSONL read or write operation fails.
  */
 public class JsonlGatewayException extends RuntimeException {
+    /** Serialised only if a caller chooses to; fixed so a future field cannot silently
+     *  change the identity of an already-serialised instance. */
+    private static final long serialVersionUID = 1L;
+
 
     public JsonlGatewayException(String message) {
         super(message);

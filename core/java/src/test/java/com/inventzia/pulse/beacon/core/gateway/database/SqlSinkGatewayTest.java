@@ -97,35 +97,6 @@ class SqlSinkGatewayTest {
         registry.markReady(BEATS);
     }
 
-    private SqlTableBinding binding() { return binding; }
-
-    /**
-     * The first commit throws without the rows landing, after running {@code justBeforeThrowing} —
-     * which is how a state that only appears between the failed commit and the resolution is set up.
-     */
-    private DataSource failingAtCommitAfter(Runnable justBeforeThrowing) {
-        DataSource real = h2();
-        java.util.concurrent.atomic.AtomicBoolean first =
-                new java.util.concurrent.atomic.AtomicBoolean(false);
-        return (DataSource) Proxy.newProxyInstance(
-                getClass().getClassLoader(), new Class<?>[] {DataSource.class},
-                (proxy, method, args) -> {
-                    if (!"getConnection".equals(method.getName())) {
-                        return method.invoke(real, args);
-                    }
-                    Connection c = real.getConnection();
-                    return Proxy.newProxyInstance(getClass().getClassLoader(),
-                            new Class<?>[] {Connection.class},
-                            (p2, m2, a2) -> {
-                                if ("commit".equals(m2.getName()) && first.compareAndSet(false, true)) {
-                                    justBeforeThrowing.run();
-                                    throw new SQLException("connection lost at commit", "08006");
-                                }
-                                return invokeOn(c, m2, a2);
-                            });
-                });
-    }
-
     private void executeOnDb(String sql) {
         try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
             st.execute(sql);
@@ -422,6 +393,147 @@ class SqlSinkGatewayTest {
         assertThat(d.isUniqueViolation(new SQLException("not null", "23502"))).isFalse();
         assertThat(d.isUniqueViolation(new SQLException("fk", "23503"))).isFalse();
         assertThat(d.isUniqueViolation(new SQLException("check", "23513"))).isFalse();
+    }
+
+    // ------------------------------------------------------------------
+    // Re-running must not duplicate
+    // ------------------------------------------------------------------
+
+    /** Adds the natural-key constraint the upsert conflicts against. */
+    private void addNaturalKeyConstraint() throws SQLException {
+        try (Connection c = ds.getConnection(); Statement st = c.createStatement()) {
+            st.execute(dialect.createNaturalKeyConstraintStatement(binding));
+        }
+    }
+
+    /**
+     * A sink with its own run id, as a separate run really has.
+     *
+     * <p>Each run's ingestion ids must differ, or the second load collides on the ingestion-id
+     * constraint and never reaches the natural-key logic being tested.
+     */
+    private SqlSinkGateway sinkForRun(String runId, WriteMode mode) {
+        SqlSinkGateway sink = new SqlSinkGateway("sink", ds, binding, dialect, runId,
+                SinkFailurePolicy.OBSERVATIONAL, 0, Long.MAX_VALUE, 1000, 10, 50);
+        sink.setWriteMode(mode);
+        return sink;
+    }
+
+    private SqlSinkGateway upsertSink() {
+        SqlSinkGateway sink = sink(ds, SinkFailurePolicy.OBSERVATIONAL);
+        sink.setWriteMode(WriteMode.UPSERT_ON_NATURAL_KEY);
+        return sink;
+    }
+
+    private void load(SqlSinkGateway sink, int beats) throws Exception {
+        Thread writer = new Thread(sink, "sink-writer");
+        writer.start();
+        Topic<HeartBeat> topic = new Topic<>("beats", HeartBeat.class);
+        for (int i = 0; i < beats; i++) {
+            sink.onEvent(topic, new HeartBeat("beat-" + i, 1_000L + i));
+        }
+        sink.requestStop();
+        writer.join(15_000);
+    }
+
+    @Test
+    void loadingTheSameInputTwiceDoesNotDuplicateIt() throws Exception {
+        // The ingestion id makes a retry safe within one run, but it is different on every run by
+        // construction - so it does nothing for re-running. That is the natural key's job (§7).
+        addNaturalKeyConstraint();
+
+        load(sinkForRun("run-1", WriteMode.UPSERT_ON_NATURAL_KEY), 10);
+        assertThat(rowCount()).isEqualTo(10);
+
+        load(sinkForRun("run-2", WriteMode.UPSERT_ON_NATURAL_KEY), 10);
+        assertThat(rowCount()).as("the same bars, not twice as many").isEqualTo(10);
+
+        load(sinkForRun("run-3", WriteMode.UPSERT_ON_NATURAL_KEY), 10);
+        assertThat(rowCount()).isEqualTo(10);
+    }
+
+    @Test
+    void appendModeStillAppendsDistinctEvents() throws Exception {
+        // The control, and the default: a live recording genuinely does produce new events each run,
+        // and converging would quietly destroy them. Distinct natural keys, so the constraint is not
+        // what is being tested here.
+        addNaturalKeyConstraint();
+        load(sinkForRun("run-a", WriteMode.APPEND), 10);      // beat-0..9 at 1000..1009
+
+        SqlSinkGateway second = sinkForRun("run-b", WriteMode.APPEND);
+        Thread writer = new Thread(second, "sink-writer");
+        writer.start();
+        Topic<HeartBeat> topic = new Topic<>("beats", HeartBeat.class);
+        for (int i = 10; i < 20; i++) {                       // beat-10..19 at 1010..1019
+            second.onEvent(topic, new HeartBeat("beat-" + i, 1_000L + i));
+        }
+        second.requestStop();
+        writer.join(15_000);
+
+        assertThat(rowCount()).as("append is append").isEqualTo(20);
+        assertThat(second.writeMode()).isEqualTo(WriteMode.APPEND);
+    }
+
+    @Test
+    void appendingADuplicateNaturalKeyFailsLoudlyRatherThanDuplicating() throws Exception {
+        // Worth pinning: once the natural-key constraint exists, re-loading the same input in APPEND
+        // mode is a constraint violation, not a silent duplicate. Loud is the right outcome, but it is
+        // a different one from converging - which is why the write mode is an explicit choice.
+        addNaturalKeyConstraint();
+        load(sinkForRun("run-x", WriteMode.APPEND), 5);
+        assertThat(rowCount()).isEqualTo(5);
+
+        SqlSinkGateway again = sinkForRun("run-y", WriteMode.APPEND);
+        load(again, 5);                                      // the very same natural keys
+
+        assertThat(rowCount()).as("nothing was duplicated").isEqualTo(5);
+        assertThat(again.counts().notCommitted()).as("and the attempt was recorded, not ignored")
+                .isPositive();
+        assertThat(again.counts().isFinal()).isTrue();
+    }
+
+    @Test
+    void anUpsertRefreshesTheValuesItConvergesOn() throws Exception {
+        // Converging is not merely "don't insert": a corrected re-delivery has to win.
+        addNaturalKeyConstraint();
+        load(sinkForRun("run-first", WriteMode.UPSERT_ON_NATURAL_KEY), 1);
+
+        String before = ingestionIdOf("beat-0");
+        load(sinkForRun("run-second", WriteMode.UPSERT_ON_NATURAL_KEY), 1);
+        String after = ingestionIdOf("beat-0");
+
+        assertThat(rowCount()).isEqualTo(1);
+        assertThat(after).as("the row was updated by the later run, not left behind")
+                .isNotEqualTo(before);
+    }
+
+    @Test
+    void upsertModeIsRefusedWhenTheConstraintIsMissing() throws Exception {
+        // Without the constraint the upsert has nothing to conflict against and silently becomes an
+        // append - re-running would duplicate exactly as before, with nothing saying so. Refusing at
+        // startup is the only way that does not look like success.
+        SqlSinkGateway sink = upsertSink();
+        assertThatThrownBy(sink::validate)
+                .isInstanceOf(BindingMismatchException.class)
+                .hasMessageContaining("unique constraint")
+                .hasMessageContaining("silently become an append");
+    }
+
+    @Test
+    void upsertModeValidatesWhenTheConstraintIsThere() throws Exception {
+        addNaturalKeyConstraint();
+        upsertSink().validate();        // must not throw
+    }
+
+    private String ingestionIdOf(String key) throws SQLException {
+        String sql = "SELECT " + dialect.quote(IngestionId.COLUMN) + " FROM "
+                + dialect.qualify(BEATS) + " WHERE " + dialect.quote("beatKey") + " = ?";
+        try (Connection c = ds.getConnection(); PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, key);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : null;
+            }
+        }
     }
 
     // ------------------------------------------------------------------
