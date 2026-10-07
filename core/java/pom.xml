@@ -187,6 +187,17 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <version>3.5.2</version>
+                <configuration>
+                    <!--
+                      Tests needing a real external server are excluded here, so an ordinary
+                      `mvn test` needs nothing installed. They are NOT written to skip themselves:
+                      a test that quietly passes because its database was missing is worse than no
+                      test. Enable them with -Pmysql-it, which CI does against a service container.
+                    -->
+                    <excludes>
+                        <exclude>**/MySqlIntegrationTest.java</exclude>
+                    </excludes>
+                </configuration>
             </plugin>
         </plugins>
     </build>
@@ -291,6 +302,34 @@
           the actual-publish step (needs credentials); see
           PackagingAndPublishingRelease.md §5.
         -->
+        <!--
+          Integration tests against a real MySQL server. The SQL gateway's guarantees are only
+          demonstrated by a real engine: H2 - even in MySQL compatibility mode - accepts DDL that a
+          managed MySQL refuses, and reports column metadata differently. Every check in
+          MySqlIntegrationTest exists because a real server rejected something H2 had allowed.
+
+            mvn -Pmysql-it test -Dpulse.it.mysql.url=jdbc:mysql://127.0.0.1:3306/pulse \
+                                -Dpulse.it.mysql.user=root -Dpulse.it.mysql.password=secret
+        -->
+        <profile>
+            <id>mysql-it</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <!-- Run ONLY the integration test, so a green run means it really ran. -->
+                            <excludes combine.self="override"/>
+                            <includes>
+                                <include>**/MySqlIntegrationTest.java</include>
+                            </includes>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+
         <profile>
             <id>release</id>
             <build>

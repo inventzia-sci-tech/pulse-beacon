@@ -83,6 +83,70 @@ jobs:
         working-directory: pulse-beacon
         run: bash dist-smoke-test.sh
 
+  # The SQL gateways against a REAL MySQL server. H2 - even in MySQL compatibility mode - accepts DDL
+  # that a managed MySQL refuses and reports column metadata differently, so only this job demonstrates
+  # the storage guarantees. sql_require_primary_key is ON deliberately: a managed MySQL (Aiven) runs
+  # that way and rejected our original DDL, so CI should hold us to the stricter setting rather than
+  # the permissive default.
+  mysql:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: pulse
+          MYSQL_DATABASE: pulse
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -ppulse"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: pulse-beacon
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PULSE_DATA_REPO }}
+          ref: ${{ env.PULSE_DATA_REF }}
+          path: pulse-data
+          token: ${{ secrets.CI_PAT || github.token }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Install pulse-data jar to the local .m2
+        run: mvn -B -ntp -f pulse-data/pom.xml clean install -DskipTests
+
+      # A managed MySQL (Aiven) runs with this ON and rejected our original DDL, so CI holds us to the
+      # stricter setting. It is belt-and-braces: MySqlIntegrationTest asserts via getPrimaryKeys that
+      # the ingestion id really is the primary key, which is the authoritative check and does not depend
+      # on the server setting. So a runner without the mysql client reports it and carries on rather
+      # than failing the job for a missing convenience.
+      - name: Require a primary key, as a managed MySQL does
+        run: |
+          if command -v mysql >/dev/null 2>&1; then
+            mysql -h 127.0.0.1 -P 3306 -uroot -ppulse \
+              -e "SET PERSIST sql_require_primary_key = ON; SELECT @@sql_require_primary_key;"
+          else
+            echo "NOTE: no mysql client on this runner; sql_require_primary_key left at its default."
+            echo "      The primary key is still asserted directly by MySqlIntegrationTest."
+          fi
+
+      # -Pmysql-it runs ONLY MySqlIntegrationTest, and that test fails rather than skips when it
+      # cannot reach a server - so a green result here means it genuinely ran against MySQL.
+      - name: SQL gateway integration tests (real MySQL)
+        working-directory: pulse-beacon/core/java
+        run: |
+          mvn -B -ntp -Pmysql-it test \
+            -Dpulse.it.mysql.url="jdbc:mysql://127.0.0.1:3306/pulse?sslMode=DISABLED&rewriteBatchedStatements=true" \
+            -Dpulse.it.mysql.user=root \
+            -Dpulse.it.mysql.password=pulse
+
   # Finding 2: the cross-language integration tests run against the INSTALLED wheels
   # (bundled jar via resolve_classpath) and FAIL rather than skip on a missing prereq.
   integration:
