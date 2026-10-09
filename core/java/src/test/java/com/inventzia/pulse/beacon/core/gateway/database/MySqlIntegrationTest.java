@@ -22,6 +22,10 @@ import org.junit.jupiter.api.Test;
 
 import javax.sql.DataSource;
 import java.io.PrintWriter;
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.DriverManager;
@@ -255,6 +259,152 @@ class MySqlIntegrationTest {
     }
 
     // ------------------------------------------------------------------
+    // Delivery semantics (section 7) against a real server
+    // ------------------------------------------------------------------
+
+    @Test
+    void aCommitWhoseOutcomeIsUnknownAndDidNotLandIsResolvedByInserting() throws Exception {
+        // The case section 7 exists for, on the engine it was written for. Only the commit
+        // acknowledgement is simulated - and it has to be, because "the server committed and the
+        // answer was lost" is by definition a client-side observation. Everything else is real: the
+        // inserts, the ingestion-id primary key, and the lookup that resolves the outcome all run
+        // against MySQL.
+        List<CdfBar> bars = bars(5, START + 100);
+        SqlSinkGateway sink = sinkOn(failingAtCommit(false), "run-unknown",
+                WriteMode.UPSERT_ON_NATURAL_KEY);
+        load(sink, bars);
+
+        DeliveryAccounting.Counts c = sink.counts();
+        assertThat(c.observed()).isEqualTo(5);
+        assertThat(c.unknown()).as("the retry established what happened; nothing may be left unknown")
+                .isZero();
+        assertThat(c.committed()).isEqualTo(5);
+        assertThat(c.isFinal()).isTrue();
+        // Resolution inserted them, so MySQL really does hold exactly five.
+        assertThat(rowCount()).as("committed must mean the rows are in the table").isEqualTo(5);
+    }
+
+    @Test
+    void aCommitThatLandedButWasNotAcknowledgedDoesNotDuplicate() throws Exception {
+        // The other half, and the one a naive retry gets wrong: the rows ARE there, so re-inserting
+        // them must not double them. The proxy commits for real and then throws, so MySQL has genuinely
+        // committed before the client is told anything.
+        List<CdfBar> bars = bars(5, START + 100);
+        SqlSinkGateway sink = sinkOn(failingAtCommit(true), "run-landed",
+                WriteMode.UPSERT_ON_NATURAL_KEY);
+        load(sink, bars);
+
+        DeliveryAccounting.Counts c = sink.counts();
+        assertThat(c.unknown()).isZero();
+        assertThat(c.committed()).isEqualTo(5);
+        assertThat(rowCount()).as("five rows, not ten - the ingestion id identified them")
+                .isEqualTo(5);
+    }
+
+    @Test
+    void anUnresolvableOutcomeStaysUnknownAndFailsAnEssentialRun() throws Exception {
+        // Commit fails and the resolution cannot reach the database either. Neither "written" nor
+        // "lost" is honest, so it stays unknown - and because the sink is essential, that fails.
+        List<CdfBar> bars = bars(5, START + 100);
+        SqlSinkGateway sink = sinkOn(unusableAfterFirstCommit(), "run-unresolvable",
+                WriteMode.UPSERT_ON_NATURAL_KEY);
+
+        Thread writer = new Thread(sink, "sink-writer");
+        writer.start();
+        for (CdfBar b : bars) sink.onEvent(TOPIC, b);
+        sink.requestStop();
+        writer.join(180_000);
+
+        DeliveryAccounting.Counts c = sink.counts();
+        assertThat(c.unknown()).as("it genuinely could not be established").isEqualTo(5);
+        assertThat(c.committed()).isZero();
+        assertThat(c.isFinal()).isTrue();
+        assertThat(sink.terminalFailure()).as("an essential sink must report this").isPresent();
+        assertThat(sink.terminalFailure().get().fatal()).isTrue();
+    }
+
+    // ------------------------------------------------------------------
+    // The replay snapshot (section 3) - a claim we make about InnoDB
+    // ------------------------------------------------------------------
+
+    @Test
+    void theSnapshotExcludesRowsCommittedDuringTheReplay() throws Exception {
+        // supportsReplaySnapshot() returns true for MySQL. Until now the only test asserted that the
+        // dialect returns what we hard-coded; this asserts InnoDB actually behaves that way.
+        //
+        // The inserted row is deliberately placed BELOW the upper bound and ABOVE the read cursor, so
+        // the bound of section 3 would not exclude it. Only the snapshot can. If REPEATABLE READ were
+        // not giving a consistent read for the whole replay, this row would appear on a later page.
+        List<CdfBar> bars = bars(200, START + 1_000);
+        load(sinkOn(ds, "run-seed", WriteMode.UPSERT_ON_NATURAL_KEY), bars);
+
+        long intruderTime = START + 1_000 + 150;          // inside the window, below max(timestamp)
+        SqlSourceGateway<CdfBar> source = source(10);
+        assertThat(source.usedSnapshot() || true).isTrue();   // established once the run starts
+
+        List<CdfBar> read = Collections.synchronizedList(new ArrayList<>());
+        java.util.concurrent.atomic.AtomicBoolean inserted =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        AbstractGateway collector = new AbstractGateway("collector", START, END) {
+            @Override public void run() { }
+            @Override public <Q extends Datum> void onEvent(Topic<Q> t, Q p) {
+                read.add((CdfBar) p);
+                // On the first event, another connection commits a row into the window.
+                if (inserted.compareAndSet(false, true)) {
+                    try {
+                        insertDirectly("INTRUDER", intruderTime, "run-intruder:0");
+                    } catch (SQLException e) {
+                        throw new RuntimeException(e);
+                    }
+                }
+            }
+            @Override public <Q extends Datum> void publish(Topic<Q> t, Q p) { }
+        };
+        source.registerSubscriber(collector, TOPIC, List.of("CL", "INTRUDER"));
+        source.run();
+
+        assertThat(source.usedSnapshot()).as("MySQL is characterised for replay snapshots").isTrue();
+        assertThat(source.terminalFailure()).isEmpty();
+        assertThat(read).extracting(CdfBar::symb)
+                .as("a row committed mid-replay must not appear, even below the bound")
+                .doesNotContain("INTRUDER");
+        assertThat(read).hasSize(200);
+        assertThat(source.rowsFetched()).isEqualTo(source.rowsInWindow());
+        // ...and it really is in the table, so the test proved exclusion rather than a failed insert.
+        assertThat(rowCount()).isEqualTo(201);
+    }
+
+    // ------------------------------------------------------------------
+    // Transport
+    // ------------------------------------------------------------------
+
+    @Test
+    void theConnectionIsEncryptedWhenTheUrlAsksForIt() throws Exception {
+        // CI used to connect with sslMode=DISABLED while the real deployment uses REQUIRED, so the TLS
+        // path was never exercised. This asserts the session is genuinely encrypted whenever the URL
+        // asks for it, rather than trusting the parameter was honoured.
+        String url = property("pulse.it.mysql.url", "PULSE_IT_MYSQL_URL", "");
+        boolean wantsTls = url.toLowerCase(java.util.Locale.ROOT).contains("sslmode=required")
+                || url.toLowerCase(java.util.Locale.ROOT).contains("sslmode=verify");
+
+        try (Connection c = ds.getConnection();
+             Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery("SHOW STATUS LIKE 'Ssl_cipher'")) {
+            rs.next();
+            String cipher = rs.getString(2);
+            if (wantsTls) {
+                assertThat(cipher).as("the URL asked for TLS, so the session must be encrypted")
+                        .isNotBlank();
+            } else {
+                // Not a failure: a local container may legitimately run without TLS. Reported, so the
+                // gap is visible rather than silent.
+                System.out.println("NOTE: connection is not encrypted (Ssl_cipher='"
+                        + cipher + "'); the URL did not request TLS");
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Fixtures
     // ------------------------------------------------------------------
 
@@ -262,6 +412,123 @@ class MySqlIntegrationTest {
         BigDecimal p = new BigDecimal(price);
         return new CdfBar("CL", atMillis, p, p, p, p, p, p,
                 Instant.ofEpochMilli(atMillis), 42L, LocalDate.of(2026, 1, 2), null, null, null);
+    }
+
+    /** Several bars at consecutive event times. */
+    private static List<CdfBar> bars(int n, long firstMillis) {
+        List<CdfBar> bars = new ArrayList<>(n);
+        for (int i = 0; i < n; i++) {
+            bars.add(bar("1." + (i % 97), firstMillis + i));
+        }
+        return bars;
+    }
+
+    /** Insert a row with a chosen key, time and ingestion id, on its own connection. */
+    private void insertDirectly(String symb, long atMillis, String ingestionId) throws SQLException {
+        String sql = "INSERT INTO " + dialect.qualify(table) + " ("
+                + dialect.quote("symb") + ", " + dialect.quote("timestamp") + ", "
+                + dialect.quote("op") + ", " + dialect.quote("hi") + ", " + dialect.quote("lo") + ", "
+                + dialect.quote("cl") + ", " + dialect.quote("vlm") + ", "
+                + dialect.quote("datetime") + ", " + dialect.quote("date") + ", "
+                + dialect.quote(IngestionId.COLUMN) + ") VALUES (?, ?, 1, 1, 1, 1, 1,"
+                + " '2026-01-02 00:00:00.000', '2026-01-02', ?)";
+        try (Connection c = ds.getConnection();
+             java.sql.PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, symb);
+            ps.setLong(2, atMillis);
+            ps.setString(3, ingestionId);
+            ps.executeUpdate();
+        }
+    }
+
+    /**
+     * A DataSource over the real server whose first commit throws.
+     *
+     * @param commitForReal commit before throwing, so MySQL has genuinely committed and only the
+     *                      acknowledgement is lost - which is precisely the case section 7 exists for
+     */
+    private DataSource failingAtCommit(boolean commitForReal) {
+        java.util.concurrent.atomic.AtomicBoolean first =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        return proxied(c -> (p, m, a) -> {
+            if ("commit".equals(m.getName()) && first.compareAndSet(false, true)) {
+                if (commitForReal) c.commit();
+                throw new SQLException("connection lost at commit", "08006");
+            }
+            return invokeOn(c, m, a);
+        });
+    }
+
+    /**
+     * The writer's connection works and inserts for real, but its commit throws; every connection
+     * opened afterwards is unusable.
+     *
+     * <p>Numbered per connection rather than by a flag: the writer's own connection must be fully
+     * functional, or the rows never reach MySQL and the batch is recorded as demonstrably
+     * not-committed instead of unknown - which is a different case entirely.
+     */
+    private DataSource unusableAfterFirstCommit() {
+        java.util.concurrent.atomic.AtomicInteger connections = new java.util.concurrent.atomic.AtomicInteger();
+        return proxiedNumbered((c, n) -> (p, m, a) -> {
+            String name = m.getName();
+            if (n == 1 && "commit".equals(name)) {
+                throw new SQLException("connection lost at commit", "08006");
+            }
+            if (n > 1 && ("prepareStatement".equals(name) || "createStatement".equals(name))) {
+                // The resolution's fresh connection cannot be used, so the outcome is unknowable.
+                throw new SQLException("no usable connection", "08006");
+            }
+            return invokeOn(c, m, a);
+        }, connections);
+    }
+
+    /** As {@link #proxied}, but the handler is told which connection this is (1-based). */
+    private DataSource proxiedNumbered(
+            java.util.function.BiFunction<Connection, Integer, InvocationHandler> handler,
+            java.util.concurrent.atomic.AtomicInteger counter) {
+        DataSource real = ds;
+        return (DataSource) Proxy.newProxyInstance(getClass().getClassLoader(),
+                new Class<?>[] {DataSource.class},
+                (proxy, method, args) -> {
+                    if (!"getConnection".equals(method.getName())) {
+                        return invokeOn(real, method, args);
+                    }
+                    Connection c = real.getConnection();
+                    int n = counter.incrementAndGet();
+                    return Proxy.newProxyInstance(getClass().getClassLoader(),
+                            new Class<?>[] {Connection.class}, handler.apply(c, n));
+                });
+    }
+
+    /** Wrap each real connection in a handler built by {@code handler}. */
+    private DataSource proxied(java.util.function.Function<Connection, InvocationHandler> handler) {
+        DataSource real = ds;
+        return (DataSource) Proxy.newProxyInstance(getClass().getClassLoader(),
+                new Class<?>[] {DataSource.class},
+                (proxy, method, args) -> {
+                    if (!"getConnection".equals(method.getName())) {
+                        return invokeOn(real, method, args);
+                    }
+                    Connection c = real.getConnection();
+                    return Proxy.newProxyInstance(getClass().getClassLoader(),
+                            new Class<?>[] {Connection.class}, handler.apply(c));
+                });
+    }
+
+    private static Object invokeOn(Object target, Method m, Object[] a) throws Throwable {
+        try {
+            return m.invoke(target, a);
+        } catch (InvocationTargetException e) {
+            throw e.getCause();
+        }
+    }
+
+    private SqlSinkGateway sinkOn(DataSource on, String runId, WriteMode mode) {
+        SqlSinkGateway sink = new SqlSinkGateway("sink", on, binding, dialect, runId,
+                SinkFailurePolicy.ESSENTIAL, START, END, 10_000, 100, 50);
+        sink.setWriteMode(mode);
+        sink.setDrainTimeoutMillis(120_000);
+        return sink;
     }
 
     private SqlSinkGateway sink(String runId, WriteMode mode) {

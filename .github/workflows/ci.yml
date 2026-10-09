@@ -139,11 +139,17 @@ jobs:
 
       # -Pmysql-it runs ONLY MySqlIntegrationTest, and that test fails rather than skips when it
       # cannot reach a server - so a green result here means it genuinely ran against MySQL.
+      #
+      # sslMode=REQUIRED, not DISABLED: the real deployment connects over TLS, and testing the
+      # unencrypted path would leave that untested. MySQL 8.4 enables TLS with a self-signed
+      # certificate, and REQUIRED encrypts without verifying the CA - which is what we want here,
+      # since the container's certificate is not one we could verify anyway. The test asserts the
+      # session really is encrypted rather than trusting the parameter was honoured.
       - name: SQL gateway integration tests (real MySQL)
         working-directory: pulse-beacon/core/java
         run: |
           mvn -B -ntp -Pmysql-it test \
-            -Dpulse.it.mysql.url="jdbc:mysql://127.0.0.1:3306/pulse?sslMode=DISABLED&rewriteBatchedStatements=true" \
+            -Dpulse.it.mysql.url="jdbc:mysql://127.0.0.1:3306/pulse?sslMode=REQUIRED&rewriteBatchedStatements=true" \
             -Dpulse.it.mysql.user=root \
             -Dpulse.it.mysql.password=pulse
 
