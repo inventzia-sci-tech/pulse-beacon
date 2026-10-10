@@ -365,6 +365,15 @@ public class SqlSinkGateway extends AbstractGateway {
      * be performed, the batch stays {@code unknown} — the honest answer.
      */
     private void resolveByVerification(List<Pending> batch) {
+        // Upsert mode cannot be resolved by ingestion id, because an upsert OVERWRITES the ingestion
+        // id of the row it replaces. Two events in one batch sharing a natural key leave only the
+        // later one's id behind, so looking the earlier one up finds it "absent" and re-applies it -
+        // restoring a superseded value while reporting both as committed. Measured: a batch writing
+        // (key,time) twice ended up holding the FIRST event's data, with no failure reported.
+        if (writeMode == WriteMode.UPSERT_ON_NATURAL_KEY) {
+            resolveByReapplying(batch);
+            return;
+        }
         // A FRESH connection, and not a detail. The connection whose commit failed may hold an open
         // transaction; querying or inserting on it would see that transaction's own pending rows and
         // prove nothing.
@@ -410,6 +419,32 @@ public class SqlSinkGateway extends AbstractGateway {
     private void unresolved(int rows, Exception cause) {
         onPersistenceFailure("could not establish the outcome of " + rows
                              + " rows; they remain unknown", cause);
+    }
+
+    /**
+     * Resolve an unknown outcome by applying the batch again, in order.
+     *
+     * <p>The right move in upsert mode, and simpler than it looks. The upsert is idempotent on the
+     * natural key, so re-applying is safe whether or not the first attempt landed; and because the
+     * batch is replayed <em>in its original order</em>, the last event for each natural key wins
+     * again - which is the state the run is supposed to leave behind. Asking which ingestion ids are
+     * present cannot establish that, since the ids of superseded events are gone by construction.
+     *
+     * <p>If it cannot be applied, the batch stays {@code unknown} and the declared failure policy
+     * applies, exactly as for the identity-based path.
+     */
+    private void resolveByReapplying(List<Pending> batch) {
+        try (Connection fresh = dataSource.getConnection()) {
+            fresh.setAutoCommit(false);
+            insertAndCommit(fresh, batch);
+            accounting.resolveUnknown(batch.size(), DeliveryOutcome.COMMITTED);
+            log.info(name() + ": re-applied " + batch.size() + " rows in order; the upsert is"
+                     + " idempotent on the natural key, so the batch is now committed in full");
+        } catch (SQLException e) {
+            unresolved(batch.size(), e);
+        } catch (RuntimeException e) {
+            unresolved(batch.size(), e);
+        }
     }
 
     /** Which of the batch's ingestion ids are already in the table, asked in bounded chunks. */

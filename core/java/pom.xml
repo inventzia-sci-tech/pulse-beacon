@@ -257,6 +257,23 @@
                                     <shadedArtifactAttached>true</shadedArtifactAttached>
                                     <shadedClassifierName>runtime</shadedClassifierName>
                                     <createDependencyReducedPom>false</createDependencyReducedPom>
+                                    <!--
+                                      The JDBC driver is NOT bundled. docs/pulse-sql-gateway.md says a
+                                      DataSource is injected so the host application owns pooling,
+                                      credentials and the driver - and the driver is a deployment
+                                      choice: MariaDB's driver, a pooled wrapper, or a different
+                                      version entirely. `optional` in the dependency block keeps it off
+                                      consumers' compile paths but does NOT keep it out of a shaded
+                                      jar, so it has to be excluded explicitly. Measured before this
+                                      exclusion: 1111 Connector/J classes and 758 protobuf classes were
+                                      being shipped inside the runtime jar.
+                                    -->
+                                    <artifactSet>
+                                        <excludes>
+                                            <exclude>com.mysql:mysql-connector-j</exclude>
+                                            <exclude>com.google.protobuf:protobuf-java</exclude>
+                                        </excludes>
+                                    </artifactSet>
                                     <transformers>
                                         <!-- Merge META-INF/services (logback, jackson modules)
                                              so the shaded jar keeps working service discovery. -->

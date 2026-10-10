@@ -73,6 +73,54 @@ public class MySqlDialect extends GenericSqlDialect {
     /**
      * MySQL cannot generate it deterministically, so it is not offered. See the class note.
      */
+    /**
+     * {@code ENGINE=InnoDB}, explicitly.
+     *
+     * <p>Not redundant: {@code default_storage_engine} is a server setting, so "the default is InnoDB"
+     * is true of a stock server and not of every server. MyISAM accepts {@code commit()} and ignores
+     * it, which would make the three-outcome accounting and the replay snapshot both fictional while
+     * everything appeared to work. Naming the engine is the only way the DDL guarantees what the
+     * dialect claims.
+     */
+    @Override
+    public String createTableStatement(SqlTableBinding binding) {
+        return super.createTableStatement(binding) + " ENGINE=InnoDB";
+    }
+
+    /**
+     * Refuse a table whose storage engine cannot honour a transaction.
+     *
+     * <p>For a table someone else provisioned, which the DDL above says nothing about. The engine is
+     * per table in MySQL, so this has to be asked of the table rather than of the server.
+     */
+    @Override
+    public String storageEngineProblem(java.sql.Connection c, QualifiedTableName table)
+            throws java.sql.SQLException {
+        String sql = "SELECT engine FROM information_schema.tables"
+                   + " WHERE table_schema = COALESCE(?, DATABASE()) AND table_name = ?";
+        try (java.sql.PreparedStatement ps = c.prepareStatement(sql)) {
+            ps.setString(1, table.schema());
+            ps.setString(2, table.table());
+            try (java.sql.ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) {
+                    return null;        // the table's absence is a different problem, reported elsewhere
+                }
+                String engine = rs.getString(1);
+                if (engine == null || "InnoDB".equalsIgnoreCase(engine)) {
+                    return null;
+                }
+                return "its storage engine is " + engine + ", which does not support transactions;"
+                     + " the delivery accounting and the replay snapshot both require InnoDB";
+            }
+        } catch (java.sql.SQLException e) {
+            // A MySQL-compatible server need not expose information_schema.tables.engine - H2's MySQL
+            // mode, which the faster tests run against, has no such column. Being unable to ask is not
+            // evidence of a problem, and must not break validation of an otherwise sound table. A real
+            // MySQL always has it, which is the case this check exists for.
+            return null;
+        }
+    }
+
     @Override
     public boolean supportsDerivedTimestamp() { return false; }
 

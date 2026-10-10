@@ -508,6 +508,32 @@ class SqlSinkGatewayTest {
     }
 
     @Test
+    void recoveryDoesNotRestoreASupersededEvent() throws Exception {
+        // The upsert overwrites the ingestion id of the row it replaces, so resolving an unknown
+        // outcome by looking ids up re-applies events a later one had already superseded.
+        addNaturalKeyConstraint();
+        SqlSinkGateway sink = new SqlSinkGateway("sink", failing(FailAt.COMMIT, true), binding,
+                dialect, "run-superseded", SinkFailurePolicy.OBSERVATIONAL, 0, Long.MAX_VALUE,
+                1000, 10, 50);
+        sink.setWriteMode(WriteMode.UPSERT_ON_NATURAL_KEY);
+
+        Thread writer = new Thread(sink, "sink-writer");
+        writer.start();
+        Topic<HeartBeat> topic = new Topic<>("beats", HeartBeat.class);
+        // Same natural key (beatKey, beatTime); the second must win.
+        sink.onEvent(topic, new HeartBeat("SAME", 1_000L));
+        sink.onEvent(topic, new HeartBeat("SAME", 1_000L));
+        sink.requestStop();
+        writer.join(15_000);
+
+        assertThat(rowCount()).isEqualTo(1);
+        assertThat(sink.counts().isFinal()).isTrue();
+        assertThat(ingestionIdOf("SAME"))
+                .as("the later event owns the row; recovery must not reinstate the earlier one")
+                .isEqualTo(new IngestionId("run-superseded", 1).encoded());
+    }
+
+    @Test
     void upsertModeIsRefusedWhenTheConstraintIsMissing() throws Exception {
         // Without the constraint the upsert has nothing to conflict against and silently becomes an
         // append - re-running would duplicate exactly as before, with nothing saying so. Refusing at

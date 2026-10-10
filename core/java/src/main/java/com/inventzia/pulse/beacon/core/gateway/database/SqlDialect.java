@@ -109,6 +109,21 @@ public interface SqlDialect {
     }
 
     /**
+     * Why this table's storage engine cannot deliver what the dialect promises, or {@code null} if it
+     * can.
+     *
+     * <p>Checked rather than assumed. {@link #supportsReplaySnapshot()} and the whole three-outcome
+     * delivery accounting rest on real transactions, and on MySQL the storage engine is per table and
+     * the server default is configurable: a MyISAM table accepts {@code commit()} and silently ignores
+     * it, so every guarantee above it would be a fiction. Engines with one storage engine have nothing
+     * to check and return {@code null}.
+     */
+    default String storageEngineProblem(java.sql.Connection c, QualifiedTableName table)
+            throws java.sql.SQLException {
+        return null;
+    }
+
+    /**
      * Whether a snapshot (repeatable-read) transaction held for the length of a replay is both
      * available and <em>acceptable</em> on this engine.
      *

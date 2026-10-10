@@ -200,6 +200,27 @@ class MySqlIntegrationTest {
     }
 
     @Test
+    void theProvisionedTableIsInnoDb() throws Exception {
+        // The engine the server actually gave us, not what the DDL asked for. default_storage_engine
+        // is a server setting, so this is the only way to know.
+        //
+        // The refusal half - that a non-InnoDB table is rejected - is a unit test instead: a managed
+        // MySQL may disable MyISAM outright ("Storage engine MyISAM is disabled"), as Aiven does, so
+        // the refusal cannot be provoked on every server this suite might run against.
+        try (Connection c = ds.getConnection();
+             Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery("SELECT engine FROM information_schema.tables"
+                     + " WHERE table_schema = DATABASE() AND table_name = '" + table.table() + "'")) {
+            rs.next();
+            assertThat(rs.getString(1)).isEqualToIgnoringCase("InnoDB");
+        }
+        // ...and the check finds nothing wrong with it.
+        try (Connection c = ds.getConnection()) {
+            assertThat(dialect.storageEngineProblem(c, table)).isNull();
+        }
+    }
+
+    @Test
     void reloadingTheSameInputDoesNotDuplicateIt() throws Exception {
         List<CdfBar> bars = List.of(bar("1.5", START + 100), bar("2.5", START + 200));
         load(sink("run-1", WriteMode.UPSERT_ON_NATURAL_KEY), bars);
@@ -323,6 +344,39 @@ class MySqlIntegrationTest {
         assertThat(sink.terminalFailure().get().fatal()).isTrue();
     }
 
+    @Test
+    void recoveryDoesNotRestoreAValueThatWasSuperseded() throws Exception {
+        // An upsert OVERWRITES the ingestion id of the row it replaces. So when two events in one
+        // batch share a natural key, only the later one's id survives - and resolving by looking ids
+        // up finds the earlier one "absent", re-applies it, and restores data the run had already
+        // superseded, while reporting both as committed and no failure. Reproduced exactly that way
+        // before the fix.
+        BigDecimal first  = new BigDecimal("1.000000000000");
+        BigDecimal second = new BigDecimal("2.000000000000");
+        long when = START + 100;
+        List<CdfBar> sameKey = List.of(barWith(first, when), barWith(second, when));
+
+        SqlSinkGateway sink = sinkOn(failingAtCommit(true), "run-superseded",
+                WriteMode.UPSERT_ON_NATURAL_KEY);
+        load(sink, sameKey);
+
+        assertThat(sink.counts().committed()).isEqualTo(2);
+        assertThat(sink.counts().unknown()).isZero();
+        assertThat(sink.counts().isFinal()).isTrue();
+        assertThat(rowCount()).as("one natural key, one row").isEqualTo(1);
+
+        // The surviving row must hold the LAST event's data, not the one it superseded.
+        try (Connection c = ds.getConnection(); Statement st = c.createStatement();
+             ResultSet rs = st.executeQuery("SELECT " + dialect.quote("op") + ", "
+                     + dialect.quote(IngestionId.COLUMN) + " FROM " + dialect.qualify(table))) {
+            rs.next();
+            assertThat(rs.getBigDecimal(1))
+                    .as("recovery must not reinstate the superseded value").isEqualByComparingTo(second);
+            assertThat(IngestionId.parse(rs.getString(2)).sequence())
+                    .as("the later event owns the row").isEqualTo(1L);
+        }
+    }
+
     // ------------------------------------------------------------------
     // The replay snapshot (section 3) - a claim we make about InnoDB
     // ------------------------------------------------------------------
@@ -411,6 +465,12 @@ class MySqlIntegrationTest {
     private static CdfBar bar(String price, long atMillis) {
         BigDecimal p = new BigDecimal(price);
         return new CdfBar("CL", atMillis, p, p, p, p, p, p,
+                Instant.ofEpochMilli(atMillis), 42L, LocalDate.of(2026, 1, 2), null, null, null);
+    }
+
+    /** A bar with a chosen price at a chosen instant - same natural key for a fixed instant. */
+    private static CdfBar barWith(BigDecimal price, long atMillis) {
+        return new CdfBar("CL", atMillis, price, price, price, price, price, price,
                 Instant.ofEpochMilli(atMillis), 42L, LocalDate.of(2026, 1, 2), null, null, null);
     }
 

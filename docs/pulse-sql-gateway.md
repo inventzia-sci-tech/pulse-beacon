@@ -365,8 +365,14 @@ instead of by the status.
 and `gateway.periodic` — where the old system put it too.
 
 It adds no bundled runtime dependency: `java.sql` is in the JDK, beacon runs in classpath mode with
-no `module-info`, and the JDBC driver is supplied by the user like the JDK itself. The only new
-dependency is test-scope.
+no `module-info`, and the JDBC driver is supplied by the user like the JDK itself.
+
+**And that has to be enforced, not merely intended.** Connector/J is declared `optional`, which keeps
+it off consumers' compile paths — but `optional` says nothing to the shade plugin, so the driver was
+being shipped inside the runtime jar anyway: 1111 Connector/J classes and 758 protobuf classes,
+measured. The shade configuration now excludes both explicitly. Bundling a driver would also be the
+wrong default even if it were smaller: which driver, which version, and whether it is pooled are
+deployment choices, and a bundled one cannot be replaced by the host application.
 
 That is a supporting argument, not a decisive one — dependency count alone should not settle every
 future module boundary. The substantive reason is that SQL is *generic infrastructure with no

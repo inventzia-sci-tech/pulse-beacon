@@ -115,6 +115,7 @@ public final class TableValidator {
         List<String> problems = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
         checkDatumColumns(binding, actual, problems, dialect);
+        addStorageEngineProblem(c, binding, dialect, problems);
 
         if (!binding.isReplayable()) {
             problems.add("no stable ordering tuple: ORDER BY the time column alone is not a total"
@@ -159,6 +160,7 @@ public final class TableValidator {
         List<String> problems = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
         checkDatumColumns(binding, actual, problems, dialect);
+        addStorageEngineProblem(c, binding, dialect, problems);
 
         for (ActualColumn col : actual.values()) {
             boolean written = binding.mapping().columns().stream()
@@ -171,6 +173,21 @@ public final class TableValidator {
             }
         }
         return new Result(binding.table(), "sink", List.copyOf(problems), List.copyOf(warnings));
+    }
+
+    /**
+     * A transactional storage engine is a precondition for both roles.
+     *
+     * <p>The sink's commit/rollback accounting and the source's replay snapshot both require real
+     * transactions, so this is checked for a sink as well as a source.
+     */
+    private static void addStorageEngineProblem(Connection c, SqlTableBinding binding,
+                                                SqlDialect dialect, List<String> problems)
+            throws SQLException {
+        String problem = dialect.storageEngineProblem(c, binding.table());
+        if (problem != null) {
+            problems.add(problem);
+        }
     }
 
     /** Every datum field must be present, and a routing field must additionally be non-null. */
