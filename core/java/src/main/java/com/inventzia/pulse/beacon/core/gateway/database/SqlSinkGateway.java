@@ -142,7 +142,14 @@ public class SqlSinkGateway extends AbstractGateway {
     public void validate() throws SQLException {
         new TableRegistry(dataSource).requireReady(binding);
         try (Connection c = dataSource.getConnection()) {
-            TableValidator.validateForSink(c, binding, dialect).orThrow();
+            TableValidator.Result check = TableValidator.validateForSink(c, binding, dialect);
+            // Warnings are logged, not discarded: Result.warnings() was previously read by nothing at
+            // all, so anything that could not be verified - a storage engine, say - was as silent as
+            // if it had passed.
+            for (String warning : check.warnings()) {
+                log.warn(name() + ": " + warning);
+            }
+            check.orThrow();
             if (writeMode.needsNaturalKeyConstraint()
                     && !TableValidator.naturalKeyIsUnique(c, binding)) {
                 // Without the constraint the upsert has nothing to conflict against and degrades to an

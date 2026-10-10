@@ -108,7 +108,14 @@ public class SqlSourceGateway<P extends Datum> extends AbstractGateway {
     public void validate() throws SQLException {
         new TableRegistry(dataSource).requireReady(binding);
         try (Connection c = dataSource.getConnection()) {
-            TableValidator.validateForSource(c, binding, dialect).orThrow();
+            TableValidator.Result check = TableValidator.validateForSource(c, binding, dialect);
+            // Warnings are logged, not discarded: Result.warnings() was previously read by nothing at
+            // all, so anything that could not be verified - a storage engine, say - was as silent as
+            // if it had passed.
+            for (String warning : check.warnings()) {
+                log.warn(name() + ": " + warning);
+            }
+            check.orThrow();
         }
     }
 

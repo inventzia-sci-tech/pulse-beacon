@@ -115,7 +115,7 @@ public final class TableValidator {
         List<String> problems = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
         checkDatumColumns(binding, actual, problems, dialect);
-        addStorageEngineProblem(c, binding, dialect, problems);
+        addStorageEngineCheck(c, binding, dialect, problems, warnings);
 
         if (!binding.isReplayable()) {
             problems.add("no stable ordering tuple: ORDER BY the time column alone is not a total"
@@ -160,7 +160,7 @@ public final class TableValidator {
         List<String> problems = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
         checkDatumColumns(binding, actual, problems, dialect);
-        addStorageEngineProblem(c, binding, dialect, problems);
+        addStorageEngineCheck(c, binding, dialect, problems, warnings);
 
         for (ActualColumn col : actual.values()) {
             boolean written = binding.mapping().columns().stream()
@@ -181,12 +181,18 @@ public final class TableValidator {
      * <p>The sink's commit/rollback accounting and the source's replay snapshot both require real
      * transactions, so this is checked for a sink as well as a source.
      */
-    private static void addStorageEngineProblem(Connection c, SqlTableBinding binding,
-                                                SqlDialect dialect, List<String> problems)
-            throws SQLException {
-        String problem = dialect.storageEngineProblem(c, binding.table());
-        if (problem != null) {
-            problems.add(problem);
+    private static void addStorageEngineCheck(Connection c, SqlTableBinding binding,
+                                              SqlDialect dialect, List<String> problems,
+                                              List<String> warnings) {
+        SqlDialect.StorageEngineCheck check = dialect.storageEngineCheck(c, binding.table());
+        if (check.problem() != null) {
+            problems.add(check.problem());
+        }
+        if (check.couldNotVerify() != null) {
+            // A warning, not a problem: on a MySQL-compatible server the column may not exist at all,
+            // and failing there would reject sound tables. But it is recorded, and the gateways log it,
+            // so an unverified engine is visible rather than indistinguishable from a verified one.
+            warnings.add(check.couldNotVerify());
         }
     }
 

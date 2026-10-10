@@ -118,9 +118,38 @@ public interface SqlDialect {
      * it, so every guarantee above it would be a fiction. Engines with one storage engine have nothing
      * to check and return {@code null}.
      */
-    default String storageEngineProblem(java.sql.Connection c, QualifiedTableName table)
-            throws java.sql.SQLException {
-        return null;
+    default StorageEngineCheck storageEngineCheck(java.sql.Connection c, QualifiedTableName table) {
+        return StorageEngineCheck.ok();
+    }
+
+    /**
+     * The outcome of asking whether a table's storage engine can honour a transaction.
+     *
+     * <p>Three outcomes, not two, and for the same reason as {@link DeliveryOutcome}: "I could not
+     * find out" is not "it is fine". An engine check that fails - no such column, no permission on
+     * {@code information_schema}, the wrong database - previously returned "no problem", so a table
+     * whose engine was never verified validated exactly like one that had been. That is the shape of
+     * silence this type exists to prevent.
+     *
+     * @param problem        why the engine definitely cannot honour a transaction, or {@code null}
+     * @param couldNotVerify why the engine could not be determined, or {@code null}
+     */
+    record StorageEngineCheck(String problem, String couldNotVerify) {
+
+        /** Verified, and acceptable. */
+        public static StorageEngineCheck ok() {
+            return new StorageEngineCheck(null, null);
+        }
+
+        /** Verified, and unusable: this fails validation. */
+        public static StorageEngineCheck problem(String why) {
+            return new StorageEngineCheck(why, null);
+        }
+
+        /** Not determinable: this warns rather than fails, but is never silent. */
+        public static StorageEngineCheck couldNotVerify(String why) {
+            return new StorageEngineCheck(null, why);
+        }
     }
 
     /**

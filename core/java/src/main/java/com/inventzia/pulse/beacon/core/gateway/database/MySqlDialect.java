@@ -88,36 +88,53 @@ public class MySqlDialect extends GenericSqlDialect {
     }
 
     /**
-     * Refuse a table whose storage engine cannot honour a transaction.
+     * Refuse a table whose storage engine cannot honour a transaction, and say so when it cannot be
+     * determined rather than reporting silence as success.
      *
-     * <p>For a table someone else provisioned, which the DDL above says nothing about. The engine is
-     * per table in MySQL, so this has to be asked of the table rather than of the server.
+     * <p><b>The database is the catalog on MySQL, not the schema.</b> Connector/J maps a MySQL database
+     * to the JDBC <em>catalog</em> — measured: {@code getCatalog()} returns the database,
+     * {@code getSchema()} returns {@code null}, and {@code getCatalogTerm()} is literally
+     * {@code "database"}. Consulting only {@code schema()} therefore looked in the connection's default
+     * database for a table that might live in another, found no row, and reported no problem — so a
+     * cross-database table's engine was never actually checked.
      */
     @Override
-    public String storageEngineProblem(java.sql.Connection c, QualifiedTableName table)
-            throws java.sql.SQLException {
+    public StorageEngineCheck storageEngineCheck(java.sql.Connection c, QualifiedTableName table) {
+        // Catalog first: that is where Connector/J puts the database. Schema second, for a driver
+        // configured with databaseTerm=SCHEMA. The connection's own database last.
+        String database = table.catalog() != null ? table.catalog() : table.schema();
         String sql = "SELECT engine FROM information_schema.tables"
                    + " WHERE table_schema = COALESCE(?, DATABASE()) AND table_name = ?";
         try (java.sql.PreparedStatement ps = c.prepareStatement(sql)) {
-            ps.setString(1, table.schema());
+            ps.setString(1, database);
             ps.setString(2, table.table());
             try (java.sql.ResultSet rs = ps.executeQuery()) {
                 if (!rs.next()) {
-                    return null;        // the table's absence is a different problem, reported elsewhere
+                    // The table's absence is reported by other checks; what matters here is that we
+                    // did not establish the engine, so this must not read as approval.
+                    return StorageEngineCheck.couldNotVerify("no information_schema row for "
+                            + table.qualified() + " in "
+                            + (database == null ? "the connection's current database" : database)
+                            + ", so its storage engine was not verified");
                 }
                 String engine = rs.getString(1);
-                if (engine == null || "InnoDB".equalsIgnoreCase(engine)) {
-                    return null;
+                if (engine == null) {
+                    return StorageEngineCheck.couldNotVerify(
+                            "information_schema reported no engine for " + table.qualified());
                 }
-                return "its storage engine is " + engine + ", which does not support transactions;"
-                     + " the delivery accounting and the replay snapshot both require InnoDB";
+                if ("InnoDB".equalsIgnoreCase(engine)) {
+                    return StorageEngineCheck.ok();
+                }
+                return StorageEngineCheck.problem("its storage engine is " + engine
+                        + ", which does not support transactions; the delivery accounting and the"
+                        + " replay snapshot both require InnoDB");
             }
         } catch (java.sql.SQLException e) {
             // A MySQL-compatible server need not expose information_schema.tables.engine - H2's MySQL
-            // mode, which the faster tests run against, has no such column. Being unable to ask is not
-            // evidence of a problem, and must not break validation of an otherwise sound table. A real
-            // MySQL always has it, which is the case this check exists for.
-            return null;
+            // mode has no such column - and the query can also fail for want of permission. Either way
+            // the engine is unverified, which is reported rather than swallowed.
+            return StorageEngineCheck.couldNotVerify("could not read the storage engine of "
+                    + table.qualified() + ": " + e.getMessage());
         }
     }
 

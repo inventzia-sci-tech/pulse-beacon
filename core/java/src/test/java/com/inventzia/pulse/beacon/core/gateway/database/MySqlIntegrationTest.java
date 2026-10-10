@@ -214,9 +214,23 @@ class MySqlIntegrationTest {
             rs.next();
             assertThat(rs.getString(1)).isEqualToIgnoringCase("InnoDB");
         }
-        // ...and the check finds nothing wrong with it.
+        // ...and the check verifies it: no problem AND nothing left unverified, which are different
+        // claims. The second is the one that used to be silently true of an unchecked table.
         try (Connection c = ds.getConnection()) {
-            assertThat(dialect.storageEngineProblem(c, table)).isNull();
+            SqlDialect.StorageEngineCheck check = dialect.storageEngineCheck(c, table);
+            assertThat(check.problem()).isNull();
+            assertThat(check.couldNotVerify()).as("it was actually verified").isNull();
+        }
+
+        // The table named by catalog rather than left to the connection's default, which is how
+        // Connector/J reports a MySQL database.
+        try (Connection c = ds.getConnection()) {
+            QualifiedTableName byCatalog =
+                    new QualifiedTableName(c.getCatalog(), null, table.table());
+            SqlDialect.StorageEngineCheck check = dialect.storageEngineCheck(c, byCatalog);
+            assertThat(check.problem()).isNull();
+            assertThat(check.couldNotVerify())
+                    .as("naming the database explicitly must still find the table").isNull();
         }
     }
 
