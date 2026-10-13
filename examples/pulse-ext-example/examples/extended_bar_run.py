@@ -29,6 +29,10 @@ from inventzia.pulse.ext.schemas.extended_bar import ExtendedBar
 
 LOG = ComponentReporter("extended-bar-run")
 
+# Kept only so the example can say "run Maven first" with a useful path. It is NOT passed to
+# start_jvm: Beacon discovers this jar through the inventzia.pulse.jvm_classpath entry point
+# declared in pyproject.toml, which is the whole point of the mechanism. An application that
+# assembles its own classpath is doing the package's job for it.
 _EXT_JAR = Path(__file__).resolve().parents[1] / "java" / "target" / "pulse-ext-example-0.1.0.jar"
 
 SYMB = "AAPL"
@@ -98,7 +102,7 @@ def run(realtime=False):
         times = [start, start + 1_000, start + 2_000]
         start, end = start, start + 5_000
 
-    jpype_host.start_jvm(extra_classpath=[_EXT_JAR])     # gate verifies core+ext == core+ext
+    jpype_host.start_jvm()               # no paths: the jar is discovered. Gate verifies core+ext
     from jpype import JClass
 
     MultiClientEngine = JClass("com.inventzia.pulse.beacon.core.MultiClientEngine")

@@ -147,41 +147,49 @@ fingerprints are compared:
 Failing fast at startup turns a scary, data-dependent, mid-run failure into a boring, obvious error
 message at launch.
 
-### Why installing this package breaks the core examples
+### Why installing this package no longer breaks the core examples
 
-The Python side and the Java side are set by two independent switches:
+The Python side and the Java side are set by two switches. They used to be independent, and that
+asymmetry was the problem:
 
 - **Python's** known types come from what is **installed** in the environment (global to the env).
-  Installing this package registers `ExtendedBar` through its entry point, so *every* Python run in
-  that env now sees `ExtendedBar`, including the core examples.
-- **Java's** known types come from **which jars that particular run puts on the JVM classpath**.
-  Each run starts its own fresh JVM. The extension examples call `start_jvm(extra_classpath=[…])` to
-  add the extension jar, so their JVM has core + ext. The core examples add nothing, so their JVM
-  has core only.
+  Installing this package registers `ExtendedBar` through its `inventzia.pulse.datum_types` entry
+  point, so *every* Python run in that env sees `ExtendedBar`, including the core examples.
+- **Java's** known types come from **which jars the run puts on the JVM classpath**. Each run starts
+  its own fresh JVM. This used to be per-run and manual: an example had to locate the extension jar
+  and pass `start_jvm(extra_classpath=[...])`. A run that did not do so had a core-only JVM while
+  Python was still carrying the extension.
 
-So with the extension installed:
+This package now also declares `inventzia.pulse.jvm_classpath`, so Beacon discovers the jar itself
+and the Java switch follows the environment exactly as the Python one does. Both halves of the
+contribution are declared in the same `pyproject.toml`, and an application calls plain
+`start_jvm()`.
 
-| Run | Python universe | Java universe | Gate |
-|-----|-----------------|---------------|------|
-| an extension example | core + ext | core + ext (ext jar added) | matches, runs |
-| a core example | core + ext (still installed) | core only (no ext jar) | mismatch, stops |
+| | Python universe | Java universe | Gate |
+|---|---|---|---|
+| **before**, extension example | core + ext | core + ext (jar passed by hand) | matches, runs |
+| **before**, core example | core + ext (still installed) | core only (no jar passed) | mismatch, stops |
+| **now**, any run in the env | core + ext | core + ext (jar discovered) | matches, runs |
 
-The core example fails not because it uses a smaller set of the *same* JVM, but because its JVM is
-core-only while Python is still carrying the extension. The gate compares for exact equality in both
-directions, so "the extension is just a superset" is not a pass.
+The old failure was not that a core example used a smaller set of the *same* JVM: its JVM was
+core-only while Python still carried the extension, and the gate compares for exact equality in both
+directions, so "the extension is just a superset" was never a pass. Declaring the types without
+declaring the jar that carries them is what produced it.
 
-### The toggle
-
-Match the environment to the tier you want to run:
+### Choosing a tier
 
 ```bash
-# to run the EXTENSION examples
+# install the extension: its types AND its jar are then part of every run in the env
 pip install --no-deps -e .
 
-# to run the CORE pulse-beacon examples again
+# remove it: back to core only, on both sides together
 pip uninstall -y pulse-ext-example
 ```
 
-This is exactly how a real deployment behaves: an extension is present because its package is
-installed and its jar is on the classpath, and both runtimes are configured together. The toggle is
-only visible here because a single dev environment hosts both tiers at once.
+Uninstalling is now how you *choose* a tier, not how you repair a mismatch. This is how a real
+deployment behaves: an extension is present because its package is installed, and installing it
+configures both runtimes together.
+
+Build the jar first (`mvn -f java/pom.xml package`); the contribution reports no jar if Maven has
+not run, and Beacon then fails on the type-universe mismatch, which names the missing types, rather
+than on a path, which would not.

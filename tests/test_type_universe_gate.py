@@ -92,7 +92,12 @@ def test_reuse_with_verify_false_skips_verification(beacon_jvm, monkeypatch):
 def test_reuse_rejects_unappliable_classpath(beacon_jvm):
     from inventzia.pulse.beacon.core.crosslanguage import jpype_host
 
-    with pytest.raises(RuntimeError, match="classpath cannot be changed"):
+    # Wording follows jpype_host's: Beacon does not extend a running JVM's classpath. Asserted on
+    # the offending jar and the remedy rather than on a phrase, so a reworded message that still
+    # names both keeps passing while a message that drops either does not.
+    with pytest.raises(RuntimeError, match="extension-6b1f.jar"):
+        jpype_host.start_jvm(extra_classpath=["/no/such/extension-6b1f.jar"], verify=False)
+    with pytest.raises(RuntimeError, match="Restart the process"):
         jpype_host.start_jvm(extra_classpath=["/no/such/extension-6b1f.jar"], verify=False)
 
 

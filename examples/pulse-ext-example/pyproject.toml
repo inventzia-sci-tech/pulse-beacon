@@ -18,6 +18,12 @@ dependencies = ["pulse-data>=0.2,<0.3"]
 [project.entry-points."inventzia.pulse.datum_types"]
 ext = "inventzia.pulse.ext.schemas.provider:ExtDatumTypeProvider"
 
+# The Java half of the same contribution: Beacon discovers this jar itself, so an application
+# calls start_jvm() with no arguments. Declaring the types without declaring the jar that carries
+# them is what produced a type-universe mismatch with nothing to attribute it to.
+[project.entry-points."inventzia.pulse.jvm_classpath"]
+ext = "inventzia.pulse.ext.jvm_classpath:jars"
+
 # PEP 420 namespace packages, sharing the inventzia.pulse.* prefix with pulse-data.
 [tool.setuptools.packages.find]
 where = ["src"]

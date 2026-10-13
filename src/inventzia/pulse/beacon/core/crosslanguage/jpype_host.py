@@ -11,7 +11,7 @@
 Python-host bootstrap: start an embedded JVM (via JPype) on the Beacon classpath.
 
 This is the only direction-specific piece for the Python-host launcher. The
-classpath is resolved in two ways, in order:
+classpath is resolved in three parts, in order:
 
   1. **Installed package (zero-config):** a single shaded *runtime jar* — Beacon
      plus its ordinary Java dependencies — bundled inside the wheel at
@@ -19,6 +19,14 @@ classpath is resolved in two ways, in order:
      ``pip install pulse-beacon`` needs no staged jars, ``PYTHONPATH``, or Maven.
   2. **Source checkout (dev):** the Maven-produced release jar set staged into
      ``<pulse-beacon>/core/java/jars/`` (the module jar plus runtime deps).
+  3. **Contributions from installed domain packages:** jars declared through the
+     ``inventzia.pulse.jvm_classpath`` entry-point group (see
+     :func:`discover_contributed_jars`). This is what lets a package such as
+     pulse-finance ship its own datum types without the *application* having to
+     locate a jar and pass ``extra_classpath``. Discovery of the jars mirrors the
+     existing discovery of the datum types themselves, which already happens
+     through the ``inventzia.pulse.datum_types`` group: without it the Python side
+     can find a provider whose Java classes the JVM cannot load.
 
 JPype finds the JVM itself from ``JAVA_HOME`` — a jar is not a JVM, so a JDK/JRE
 17+ must be present (see PackagingAndPublishingRelease.md §3). Everything above
@@ -38,6 +46,103 @@ _log = ComponentReporter("jpype-host")
 # and copied here — see pulse-beacon/build-runtime-jar.sh).
 _RUNTIME_PACKAGE = "inventzia.pulse.beacon._runtime"
 _RUNTIME_JAR = "pulse-beacon-runtime.jar"
+
+#: Entry-point group through which an installed package contributes jars to the JVM classpath.
+#:
+#: Each entry point must reference a **callable** taking no arguments and returning a sequence of
+#: jar paths that already exist. A callable rather than a static attribute because the only portable
+#: way for a package to locate its own bundled jar is ``importlib.resources``, which has to run.
+#:
+#: The callable is invoked **before the JVM exists**, so it must not start a JVM, import JPype, or
+#: touch the datum-type registry. Returning an empty sequence is not an error: a data-only install
+#: legitimately contributes nothing.
+_CLASSPATH_GROUP = "inventzia.pulse.jvm_classpath"
+
+
+class ClasspathContributionError(RuntimeError):
+    """An installed package's classpath contribution could not be used.
+
+    Always names the responsible distribution. Raised *before* the JVM starts, because the
+    alternative is a ``NoClassDefFoundError`` surfacing much later with nothing to attribute it to.
+    """
+
+
+def _distribution_of(entry_point) -> str:
+    dist = getattr(entry_point, "dist", None)
+    return getattr(dist, "name", None) or "<unknown distribution>"
+
+
+def discover_contributed_jars() -> tuple[list[str], list[str]]:
+    """Jars contributed by installed packages through :data:`_CLASSPATH_GROUP`.
+
+    :returns: ``(jars, notes)`` where *notes* describes each contributor for logging.
+    :raises ClasspathContributionError: if a contributor cannot be loaded, is not callable, raises,
+        or names a jar that does not exist. Each message names the distribution responsible.
+
+    Contributions are collected in a **deterministic order** (by entry-point name, then
+    distribution). Entry-point iteration order is otherwise unspecified, and an unstable classpath
+    makes version-shadowing bugs reproduce only on some machines.
+    """
+    from importlib.metadata import entry_points
+
+    jars: list[str] = []
+    notes: list[str] = []
+    found = sorted(entry_points(group=_CLASSPATH_GROUP),
+                   key=lambda ep: (ep.name, _distribution_of(ep)))
+
+    for ep in found:
+        who = f"{_distribution_of(ep)} (entry point '{ep.name}' in '{_CLASSPATH_GROUP}')"
+        try:
+            contribute = ep.load()
+        except Exception as exc:
+            raise ClasspathContributionError(
+                f"{who} could not be loaded: {exc!r}. The entry point must reference an importable "
+                f"callable.") from exc
+        if not callable(contribute):
+            raise ClasspathContributionError(
+                f"{who} must reference a callable, but it resolved to "
+                f"{type(contribute).__name__}. A callable is required so the package can locate its "
+                f"own jar via importlib.resources at call time.")
+        try:
+            contributed = contribute()
+        except Exception as exc:
+            raise ClasspathContributionError(
+                f"{who} raised while contributing its classpath: {exc!r}") from exc
+
+        if contributed is None:
+            contributed = ()
+        if isinstance(contributed, (str, Path)):
+            raise ClasspathContributionError(
+                f"{who} returned a single {type(contributed).__name__}; it must return a sequence "
+                f"of jar paths (wrap it in a list).")
+
+        resolved: list[str] = []
+        for candidate in contributed:
+            path = Path(str(candidate))
+            if not path.is_file():
+                raise ClasspathContributionError(
+                    f"{who} contributed a jar that does not exist: {path}. The package is installed "
+                    f"but its jar is missing, which usually means the wheel was built without it.")
+            resolved.append(str(path))
+
+        if resolved:
+            jars.extend(resolved)
+            notes.append(f"{_distribution_of(ep)} ({len(resolved)} jar"
+                         f"{'s' if len(resolved) != 1 else ''})")
+    return jars, notes
+
+
+def _deduplicate(entries) -> list[str]:
+    """Drop repeats, comparing canonicalised paths, keeping first occurrence."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for entry in entries:
+        key = _normalize_classpath_entry(entry)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(str(entry))
+    return out
 
 
 def bundled_runtime_jar() -> Path | None:
@@ -67,10 +172,12 @@ def default_jars_dir() -> Path:
     return beacon_root / "core" / "java" / "jars"
 
 
-def resolve_classpath(jars_dir=None) -> tuple[list[str], str]:
-    """Resolve the Beacon classpath: explicit dir, else bundled jar, else staged jars.
+def beacon_jars(jars_dir=None) -> tuple[list[str], str]:
+    """Beacon's **own** jars only: explicit dir, else bundled jar, else staged jars.
 
-    Returns ``(jars, source_description)``. Raises ``FileNotFoundError`` if none resolve.
+    Separate from :func:`resolve_classpath` because ``jars_dir`` overrides *Beacon's* jars without
+    suppressing other packages' contributions, and because the already-running-JVM path needs to
+    reason about the two independently.
     """
     if jars_dir is not None:
         jars = sorted(glob.glob(str(Path(jars_dir) / "*.jar")))
@@ -93,6 +200,24 @@ def resolve_classpath(jars_dir=None) -> tuple[list[str], str]:
         f"(or: cd core/java && mvn package -DskipTests && "
         f"mvn dependency:copy-dependencies -DoutputDirectory=jars -DincludeScope=runtime && "
         f"cp target/pulse-beacon-core-*.jar jars/)")
+
+
+def resolve_classpath(jars_dir=None) -> tuple[list[str], str]:
+    """The full JVM classpath: Beacon's own jars, then contributions from installed packages.
+
+    Returns ``(jars, source_description)``. Raises ``FileNotFoundError`` if Beacon's own jars do not
+    resolve, and :class:`ClasspathContributionError` if a contribution is broken.
+
+    Order is Beacon's jars first, then contributions, because Beacon's shaded jar supplies pulse-data
+    and Jackson and a contributed jar is expected to be thin. ``extra_classpath`` is appended after
+    both by :func:`start_jvm`, so an explicit argument still wins.
+    """
+    own, source = beacon_jars(jars_dir)
+    contributed, notes = discover_contributed_jars()
+    jars = _deduplicate(list(own) + contributed)
+    if notes:
+        source += f" + contributions from {', '.join(notes)}"
+    return jars, source
 
 
 def _normalize_classpath_entry(entry: str) -> str:
@@ -134,25 +259,40 @@ def start_jvm(jars_dir=None, verify=True, extra_classpath=None) -> None:
     notebook cell, a retry after a failed verification, or a host application that booted the
     JVM), this does not silently no-op: verification (when ``verify``) still runs, so a
     mismatch present now is caught rather than slipping through just because the JVM started
-    earlier. And because a running JVM's classpath cannot be changed, any requested classpath
-    additions (``jars_dir`` / ``extra_classpath``) that are not already on it raise a
-    :class:`RuntimeError` rather than being silently ignored.
+    earlier.
+
+    Under Beacon's supported startup contract the classpath is fixed at ``startJVM`` and not
+    extended afterwards, so anything required but absent from the running classpath raises a
+    :class:`RuntimeError` rather than being silently ignored. That check covers **jars contributed
+    by installed packages as well as** explicitly requested ``jars_dir`` / ``extra_classpath``
+    additions. Checking only the explicit arguments would leave the no-argument call -- which is the
+    normal one once packages contribute their own jars -- verifying nothing at all, exactly in the
+    notebook and host-application cases where a foreign JVM is most likely.
     """
     import jpype
 
     if jpype.isJVMStarted():
-        # A running JVM's classpath is fixed. If the caller asked to add jars that are not
-        # already on it, they cannot be honored — fail loudly instead of silently dropping them.
-        if jars_dir is not None or extra_classpath:
-            requested = list(resolve_classpath(jars_dir)[0]) if jars_dir is not None else []
-            requested += [str(p) for p in (extra_classpath or [])]
+        # Beacon does not extend a running JVM's classpath. Anything required but absent cannot be
+        # honored, so fail loudly instead of silently dropping it.
+        #
+        # Contributed jars are checked on EVERY call, including a no-argument one: that call is the
+        # normal way to start once packages contribute their own jars, and an earlier version
+        # checked nothing unless jars_dir or extra_classpath was passed.
+        contributed, _ = discover_contributed_jars()
+        required = list(contributed)
+        if jars_dir is not None:
+            required += list(beacon_jars(jars_dir)[0])
+        required += [str(p) for p in (extra_classpath or [])]
+        if required:
             on_classpath = _running_classpath_entries()
-            missing = [j for j in requested if _normalize_classpath_entry(j) not in on_classpath]
+            missing = _deduplicate(
+                j for j in required if _normalize_classpath_entry(j) not in on_classpath)
             if missing:
                 raise RuntimeError(
-                    "JVM already running; its classpath cannot be changed, but start_jvm() was "
-                    f"asked to add jars that are not on it: {missing}. Start the JVM once with the "
-                    "full classpath (including every extension jar) before any other JPype use.")
+                    "JVM already running and its classpath is not extended, but these jars are "
+                    f"required and absent from it: {missing}. Restart the process and call "
+                    "start_jvm() once, before any other JPype use, so the full classpath "
+                    "(Beacon's jars plus every contributed jar) is set at JVM startup.")
         _log.large_info("JVM already running; reusing it")
         # Verification must still run on reuse (notebooks, retries, host-app JVMs): a mismatch
         # now must not pass just because the JVM was started by an earlier call.
