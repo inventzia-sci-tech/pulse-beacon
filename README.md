@@ -325,6 +325,8 @@ its production-facing bridge and exposes JEP for evaluation only.
 
 ### Extension example (a standalone package using the SPI)
 
+SPI: Service Provider Interface.
+
 [`examples/pulse-ext-example/`](https://github.com/inventzia-sci-tech/pulse-beacon/tree/main/examples/pulse-ext-example/) is a self-contained downstream package
 that defines its own datum, `ExtendedBar` (a `CdfBar` with extra order-flow fields), from a single
 schema, and lets both runtimes discover it with no change to pulse-data or pulse-beacon. It declares
