@@ -73,5 +73,10 @@ def beacon_jvm():
         _, source = jpype_host.resolve_classpath()
     except FileNotFoundError as exc:
         _missing_prereq(f"no Beacon classpath (bundled jar or staged jars): {exc}")
+    except jpype_host.ClasspathContributionError as exc:
+        # An installed package declares a jar it cannot produce, typically because Maven has not
+        # run in a source checkout. Treated as a missing prerequisite so local runs skip with the
+        # contributor's own message, while release CI (PULSE_REQUIRE_INTEGRATION) fails on it.
+        _missing_prereq(f"a package's classpath contribution is unusable: {exc}")
     jpype_host.start_jvm()
     return source

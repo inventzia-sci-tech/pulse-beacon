@@ -72,64 +72,100 @@ def _distribution_of(entry_point) -> str:
     return getattr(dist, "name", None) or "<unknown distribution>"
 
 
-def discover_contributed_jars() -> tuple[list[str], list[str]]:
-    """Jars contributed by installed packages through :data:`_CLASSPATH_GROUP`.
+def _discover_contributions() -> list[tuple[str, str]]:
+    """``[(jar path, contributing distribution)]`` in deterministic order.
 
-    :returns: ``(jars, notes)`` where *notes* describes each contributor for logging.
-    :raises ClasspathContributionError: if a contributor cannot be loaded, is not callable, raises,
-        or names a jar that does not exist. Each message names the distribution responsible.
+    Every failure, including one raised while *iterating* a contributor's result or converting an
+    element to a path, is reported as :class:`ClasspathContributionError` naming the distribution.
+    An earlier version validated only a bare string and iterated outside the wrapper, so a
+    contributor returning ``42`` surfaced as an unattributed ``TypeError: 'int' object is not
+    iterable``, and a generator failing part-way through did the same.
 
-    Contributions are collected in a **deterministic order** (by entry-point name, then
-    distribution). Entry-point iteration order is otherwise unspecified, and an unstable classpath
-    makes version-shadowing bugs reproduce only on some machines.
+    Order is by entry-point name, then distribution. Entry-point iteration order is otherwise
+    unspecified, and an unstable classpath makes version-shadowing bugs reproduce only on some
+    machines.
     """
     from importlib.metadata import entry_points
 
-    jars: list[str] = []
-    notes: list[str] = []
+    contributions: list[tuple[str, str]] = []
     found = sorted(entry_points(group=_CLASSPATH_GROUP),
                    key=lambda ep: (ep.name, _distribution_of(ep)))
 
     for ep in found:
-        who = f"{_distribution_of(ep)} (entry point '{ep.name}' in '{_CLASSPATH_GROUP}')"
+        dist = _distribution_of(ep)
+        who = f"{dist} (entry point '{ep.name}' in '{_CLASSPATH_GROUP}')"
+
         try:
             contribute = ep.load()
         except Exception as exc:
             raise ClasspathContributionError(
                 f"{who} could not be loaded: {exc!r}. The entry point must reference an importable "
                 f"callable.") from exc
+
         if not callable(contribute):
             raise ClasspathContributionError(
                 f"{who} must reference a callable, but it resolved to "
                 f"{type(contribute).__name__}. A callable is required so the package can locate its "
                 f"own jar via importlib.resources at call time.")
+
+        # One wrapper around calling, iterating and path conversion: a contributor can fail at any
+        # of the three, and all three must stay attributable.
         try:
             contributed = contribute()
+            if contributed is None:
+                contributed = ()
+            if isinstance(contributed, (str, bytes, Path)):
+                raise ClasspathContributionError(
+                    f"{who} returned a single {type(contributed).__name__}; it must return a "
+                    f"sequence of jar paths (wrap it in a list).")
+            try:
+                candidates = list(contributed)
+            except TypeError as exc:
+                raise ClasspathContributionError(
+                    f"{who} returned {type(contributed).__name__}, which is not iterable; it must "
+                    f"return a sequence of jar paths.") from exc
+
+            resolved: list[str] = []
+            for candidate in candidates:
+                try:
+                    path = Path(os.fspath(candidate)
+                                if hasattr(candidate, "__fspath__") else str(candidate))
+                except Exception as exc:
+                    raise ClasspathContributionError(
+                        f"{who} contributed an entry that is not a usable path "
+                        f"({candidate!r}): {exc!r}") from exc
+                if not path.is_file():
+                    raise ClasspathContributionError(
+                        f"{who} contributed a jar that does not exist: {path}. The package is "
+                        f"installed but its jar is missing, which usually means the wheel was "
+                        f"built without it.")
+                resolved.append(str(path))
+        except ClasspathContributionError:
+            raise
         except Exception as exc:
             raise ClasspathContributionError(
                 f"{who} raised while contributing its classpath: {exc!r}") from exc
 
-        if contributed is None:
-            contributed = ()
-        if isinstance(contributed, (str, Path)):
-            raise ClasspathContributionError(
-                f"{who} returned a single {type(contributed).__name__}; it must return a sequence "
-                f"of jar paths (wrap it in a list).")
+        contributions.extend((jar, dist) for jar in resolved)
+    return contributions
 
-        resolved: list[str] = []
-        for candidate in contributed:
-            path = Path(str(candidate))
-            if not path.is_file():
-                raise ClasspathContributionError(
-                    f"{who} contributed a jar that does not exist: {path}. The package is installed "
-                    f"but its jar is missing, which usually means the wheel was built without it.")
-            resolved.append(str(path))
 
-        if resolved:
-            jars.extend(resolved)
-            notes.append(f"{_distribution_of(ep)} ({len(resolved)} jar"
-                         f"{'s' if len(resolved) != 1 else ''})")
-    return jars, notes
+def discover_contributed_jars() -> tuple[list[str], list[str]]:
+    """Jars contributed by installed packages through :data:`_CLASSPATH_GROUP`.
+
+    :returns: ``(jars, notes)`` where *notes* describes each contributor for logging.
+    :raises ClasspathContributionError: if any contributor violates the contract; the message names
+        the distribution responsible.
+    """
+    contributions = _discover_contributions()
+    jars = [jar for jar, _ in contributions]
+
+    notes: list[str] = []
+    for _, dist in contributions:
+        if dist not in notes:
+            notes.append(dist)
+    counts = {d: sum(1 for _, dd in contributions if dd == d) for d in notes}
+    return jars, [f"{d} ({counts[d]} jar{'s' if counts[d] != 1 else ''})" for d in notes]
 
 
 def _deduplicate(entries) -> list[str]:
@@ -278,21 +314,31 @@ def start_jvm(jars_dir=None, verify=True, extra_classpath=None) -> None:
         # Contributed jars are checked on EVERY call, including a no-argument one: that call is the
         # normal way to start once packages contribute their own jars, and an earlier version
         # checked nothing unless jars_dir or extra_classpath was passed.
-        contributed, _ = discover_contributed_jars()
-        required = list(contributed)
+        # Keep each jar paired with whoever asked for it. A bare filename such as
+        # "runtime.jar" in the error is unactionable: the point of the message is to name the
+        # package whose jar is missing, not only the path.
+        required: list[tuple[str, str]] = list(_discover_contributions())
         if jars_dir is not None:
-            required += list(beacon_jars(jars_dir)[0])
-        required += [str(p) for p in (extra_classpath or [])]
+            required += [(j, f"jars_dir={jars_dir}") for j in beacon_jars(jars_dir)[0]]
+        required += [(str(p), "extra_classpath argument") for p in (extra_classpath or [])]
+
         if required:
             on_classpath = _running_classpath_entries()
-            missing = _deduplicate(
-                j for j in required if _normalize_classpath_entry(j) not in on_classpath)
+            missing: list[str] = []
+            seen: set[str] = set()
+            for jar, owner in required:
+                key = _normalize_classpath_entry(jar)
+                if key in on_classpath or key in seen:
+                    continue
+                seen.add(key)
+                missing.append(f"{jar} (from {owner})")
             if missing:
                 raise RuntimeError(
                     "JVM already running and its classpath is not extended, but these jars are "
-                    f"required and absent from it: {missing}. Restart the process and call "
-                    "start_jvm() once, before any other JPype use, so the full classpath "
-                    "(Beacon's jars plus every contributed jar) is set at JVM startup.")
+                    "required and absent from it:\n  " + "\n  ".join(missing)
+                    + "\nRestart the process and call start_jvm() once, before any other JPype "
+                    "use, so the full classpath (Beacon's jars plus every contributed jar) is set "
+                    "at JVM startup.")
         _log.large_info("JVM already running; reusing it")
         # Verification must still run on reuse (notebooks, retries, host-app JVMs): a mismatch
         # now must not pass just because the JVM was started by an earlier call.

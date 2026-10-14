@@ -197,6 +197,47 @@ def test_a_missing_jar_fails_before_the_jvm_starts_and_is_attributed(contributio
     assert "does not exist" in str(e.value)
 
 
+@pytest.mark.parametrize("returned, why", [
+    (42, "an int is not iterable"),
+    ({"jar": 1}, "a dict iterates into keys, not paths"),
+    (object(), "an arbitrary object is not iterable"),
+])
+def test_a_malformed_return_is_attributed_not_leaked_as_a_type_error(contributions, returned, why):
+    # The gap this closes: iteration and path conversion used to happen outside the wrapper, so a
+    # contributor returning 42 surfaced as a bare TypeError: 'int' object is not iterable, with
+    # nothing naming the package responsible.
+    contributions(_FakeEntryPoint("bad", "pulse-malformed", lambda: returned))
+    with pytest.raises(ClasspathContributionError) as e:
+        jpype_host.discover_contributed_jars()
+    assert "pulse-malformed" in str(e.value), why
+
+
+def test_a_generator_failing_part_way_through_is_attributed(contributions, jar):
+    # The first element resolves, so the failure happens during iteration rather than at the call.
+    good = jar("first.jar")
+
+    def contribute():
+        yield good
+        raise RuntimeError("resource lookup exploded halfway")
+
+    contributions(_FakeEntryPoint("lazy", "pulse-lazy", contribute))
+    with pytest.raises(ClasspathContributionError) as e:
+        jpype_host.discover_contributed_jars()
+    assert "pulse-lazy" in str(e.value)
+    assert "exploded halfway" in str(e.value)
+
+
+def test_an_element_that_cannot_become_a_path_is_attributed(contributions):
+    class Unstringable:
+        def __str__(self): raise ValueError("cannot stringify")
+
+    contributions(_FakeEntryPoint("nasty", "pulse-nasty", lambda: [Unstringable()]))
+    with pytest.raises(ClasspathContributionError) as e:
+        jpype_host.discover_contributed_jars()
+    assert "pulse-nasty" in str(e.value)
+    assert "not a usable path" in str(e.value)
+
+
 def test_a_bare_string_is_refused_rather_than_iterated_into_characters(contributions):
     contributions(_FakeEntryPoint("oops", "pulse-oops", lambda: "/one/jar.jar"))
     with pytest.raises(ClasspathContributionError) as e:
@@ -242,6 +283,9 @@ def test_a_no_argument_call_still_checks_contributions_against_a_running_jvm(
 
     message = str(e.value)
     assert "pulse-finance-core.jar" in message
+    assert "from pulse-finance" in message, (
+        "the message must name the contributing package: a bare filename such as runtime.jar "
+        "cannot identify who is responsible")
     assert "Restart" in message, "the instruction must say what to do, not only what is wrong"
     assert "start_jvm() once" in message
 
@@ -279,3 +323,20 @@ def test_an_explicit_extra_classpath_is_still_checked_on_reuse(contributions, ja
     with pytest.raises(RuntimeError) as e:
         jpype_host.start_jvm(extra_classpath=[j])
     assert "hand-built.jar" in str(e.value)
+
+
+def test_the_reuse_error_attributes_each_missing_jar_to_its_source(contributions, jar, running_jvm):
+    """A generic filename is unactionable, so every missing entry names where it came from."""
+    contributed = jar("runtime.jar")          # deliberately generic
+    explicit = jar("hand-built.jar")
+    contributions(_FakeEntryPoint("finance", "pulse-finance", lambda: [contributed]))
+    running_jvm(["/beacon/runtime.jar"])
+
+    with pytest.raises(RuntimeError) as e:
+        jpype_host.start_jvm(extra_classpath=[explicit])
+
+    message = str(e.value)
+    assert f"{contributed} (from pulse-finance)" in message
+    assert f"{explicit} (from extra_classpath argument)" in message, (
+        "an explicitly passed jar has no contributing package, and must say so rather than "
+        "being left unattributed")

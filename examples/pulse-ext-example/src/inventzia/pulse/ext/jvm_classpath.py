@@ -29,16 +29,32 @@ _RUNTIME_PACKAGE = "inventzia.pulse.ext._runtime"
 
 
 def jars() -> list[str]:
-    """The jars this extension contributes, or an empty list if none is available.
+    """The jars this extension contributes.
 
-    Returns empty rather than raising when the jar is absent, so a source checkout that has not
-    run Maven still imports. Beacon then fails on the *type universe* mismatch, which names the
-    types that are missing, instead of on a path, which would not.
+    :raises FileNotFoundError: if no jar can be found. Beacon re-raises this as a
+        ``ClasspathContributionError`` naming this distribution.
+
+    **Why this raises rather than returning an empty list.** Returning empty would be the worse
+    bug: this package's Python datum provider stays registered either way, so Java would come up
+    without ``ExtendedBar`` while Python has it. That is precisely the asymmetry the entry point
+    exists to remove, and it defers the failure past JVM startup to a type-universe mismatch that
+    says nothing about a missing jar. An earlier version of this file did exactly that.
+
+    Raising does not prevent Python-only use: Beacon calls this when it starts Java, not at import,
+    so ``from inventzia.pulse.ext.schemas.extended_bar import ExtendedBar`` is unaffected.
     """
-    for candidate in (_bundled(), _built_in_checkout()):
+    bundled, checkout = _bundled(), _built_in_checkout()
+    for candidate in (bundled, checkout):
         if candidate is not None and candidate.is_file():
             return [str(candidate)]
-    return []
+
+    raise FileNotFoundError(
+        f"{_JAR_NAME} was not found, so this extension's Java types cannot be loaded while its "
+        f"Python types are registered.\n"
+        f"  packaged location (installed wheel): {bundled if bundled else f'{_RUNTIME_PACKAGE} not present'}\n"
+        f"  development build (source checkout): {checkout}\n"
+        f"Build it with: mvn -f java/pom.xml package\n"
+        f"Or set PULSE_EXT_EXAMPLE_JAR to an existing jar.")
 
 
 def _bundled() -> Path | None:
