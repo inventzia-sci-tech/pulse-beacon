@@ -39,6 +39,11 @@ Java `META-INF/services` file so both runtimes discover the provider, and then r
 `ExtendedBar` end to end through the engine. It is the worked answer to "how do I add my own
 data type," and the executable proof that the SPI holds across languages.
 
+**On namespaces.** `com.inventzia.pulse.ext` is used here only because this is a first-party demo;
+an adopter uses its own, say `com.acme.telemetry`. Only the two entry-point group names and the
+`META-INF/services` filename are fixed, as lookup keys rather than identity, and every `TYPE_ID`
+must sit under its own provider's namespace, so no package can claim another's.
+
 `ExtendedBar` is `CdfBar` plus `bidVolume`, `askVolume`, `tradeCount`, and an optional
 `venue`: a plausible microstructure bar rather than a toy.
 
