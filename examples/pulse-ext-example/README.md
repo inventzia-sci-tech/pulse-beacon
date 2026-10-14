@@ -67,8 +67,8 @@ data type," and the executable proof that the SPI holds across languages.
 
 **On namespaces.** `com.inventzia.pulse.ext` is used here only because this is a first-party demo;
 an adopter uses its own, say `com.acme.telemetry`. Only the two entry-point group names and the
-`META-INF/services` filename are fixed, as lookup keys rather than identity, and every `TYPE_ID`
-must sit under its own provider's namespace, so no package can claim another's.
+`META-INF/services` filename are fixed, as lookup keys rather than identity, every `TYPE_ID` must
+sit under its own provider's namespace, and conflicting registrations are rejected.
 
 `ExtendedBar` is `CdfBar` plus `bidVolume`, `askVolume`, `tradeCount`, and an optional
 `venue`: a plausible microstructure bar rather than a toy.
@@ -99,9 +99,9 @@ must sit under its own provider's namespace, so no package can claim another's.
   ```
 
   **The `jvm_classpath` value is a zero-argument callable returning jar paths, not a jar
-  filename.** `jars` is a function. That is deliberate: the only portable way for a package to
-  locate a jar inside its own installed wheel is `importlib.resources`, which has to execute. The
-  contract on that function:
+  filename.** `jars` is a function. That is deliberate: a portable way for a package to locate a
+  jar inside its own installed wheel is `importlib.resources`, which has to execute. The contract on
+  that function:
 
   - it must **not** start a JVM, import JPype, or touch the datum registry. Beacon calls it *before*
     Java exists, and also when checking a JVM that is already running, so it must be safe to call
@@ -302,10 +302,10 @@ things were wrong with it:
    to know a filesystem path to another package's jar, which is the package's own business.
 2. **It required manual coordination.** Two extensions were not strictly mutually exclusive: a
    caller who knew about both could pass both jars in one `extra_classpath`. But it was the
-   *caller's* job to know, and a JVM's classpath is fixed at startup, so whoever started it first
-   had to have assembled the complete list. No package could contribute on its own behalf.
-   Automatic collection removes that coordination: each package declares its own jar and Beacon
-   gathers them.
+   *caller's* job to know, and Beacon does not extend a running JVM's classpath, so whoever
+   started it first had to have assembled the complete list. No package could contribute on its
+   own behalf. Automatic collection removes that coordination: each package declares its own jar
+   and Beacon gathers them.
 3. **It made the safety gate report configuration errors.** The fingerprint gate exists to catch
    real schema drift. Its most frequent trigger was instead "you forgot a path", which teaches
    people to read a genuine safety mechanism as noise.

@@ -156,7 +156,8 @@ Key properties:
   Interface, a small contract a package implements and registers inside its own jar) an independent
   package can contribute its own datum types, which both runtimes discover at startup with no change
   to pulse-data or pulse-beacon. A package declares the jar carrying those types alongside them, so
-  installing it configures both runtimes together and an application needs no classpath arguments. For the full description see "Adding a new data type" in the
+  installing it configures both runtimes together and an application needs no classpath arguments.
+  For the full description see "Adding a new data type" in the
   [pulse-data README](https://github.com/inventzia-sci-tech/pulse-data#adding-a-new-data-type), and
   the runnable [`pulse-ext-example`](https://github.com/inventzia-sci-tech/pulse-beacon/tree/main/examples/pulse-ext-example/) for a worked end-to-end example.
 - **Fault isolation in dispatch.** A throwing actor is caught, logged with its stack trace, and
@@ -229,8 +230,8 @@ extension's are generated the same way under its own. Every generated type, core
 implements the two-method routing contract `Datum` (`getDatumKey()`, `getDatumTime()`), and
 pulse-beacon routes `Datum`, nothing narrower.
 
-**Serialization lives in pulse-data, not here.** Because pulse-data owns the types, it owns how a
-`Datum` becomes JSON, via its `DatumCodec`, in two forms:
+**Serialization lives in pulse-data, not here.** pulse-data provides the shared serialization
+machinery for both core and extension types, via its `DatumCodec`, in two forms:
 
 - **Type-directed**: `toJson(Datum)` / `fromJson(json, Class)`, used where the type is known (for
   example a topic's payload type, as in the JSONL gateways).
