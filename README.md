@@ -148,10 +148,11 @@ Key properties:
   care about, and the engine delivers only matching events. When several actors match one event they
   are dispatched in a deterministic order (high-priority first, then registration order), so a replay
   reproduces itself exactly.
-- **Typed events.** Event schemas are defined in YAML in
-  [pulse-data](https://github.com/inventzia-sci-tech/pulse-data) and code-generated into concrete
-  classes for both Java and Python, so actors are written against real types, not untyped maps or
-  CSV strings. The type set is open: through the `DatumTypeProvider` **SPI** (Service Provider
+- **Typed events.** Event schemas are defined in YAML and code-generated into concrete classes for
+  both Java and Python, so actors are written against real types, not untyped maps or CSV strings.
+  [pulse-data](https://github.com/inventzia-sci-tech/pulse-data) holds the **core** schemas and the
+  generators; a domain package holds **its own** schemas and generated bindings, produced by those
+  same generators. The type set is open: through the `DatumTypeProvider` **SPI** (Service Provider
   Interface, a small contract a package implements and registers inside its own jar) an independent
   package can contribute its own datum types, which both runtimes discover at startup with no change
   to pulse-data or pulse-beacon. A package declares the jar carrying those types alongside them, so
@@ -216,11 +217,17 @@ and a gateway), not a kind of gateway.
 
 ### Relationship to pulse-data
 
-[pulse-data](https://github.com/inventzia-sci-tech/pulse-data) is the single source of truth for
-data types. YAML schemas are code-generated into Java records (`com.inventzia.pulse.data.schemas.*`)
-and Python Pydantic models (`inventzia.pulse.data.schemas.*`), one namespace across two languages.
-Every generated type implements the two-method routing contract `Datum` (`getDatumKey()`,
-`getDatumTime()`), and pulse-beacon routes `Datum`, nothing narrower.
+[pulse-data](https://github.com/inventzia-sci-tech/pulse-data) owns the **machinery and the core
+vocabulary**: the `Datum` contract, the schema generators, the type registry, the codecs, and the
+core schemas themselves. It is not the only place schemas may live. A domain package owns the
+schemas for *its* domain and the bindings generated from them, under its own namespace, using
+pulse-data's generators; see the extension example below.
+
+Core schemas are code-generated into Java records (`com.inventzia.pulse.data.schemas.*`) and Python
+Pydantic models (`inventzia.pulse.data.schemas.*`), one namespace across two languages, and an
+extension's are generated the same way under its own. Every generated type, core or contributed,
+implements the two-method routing contract `Datum` (`getDatumKey()`, `getDatumTime()`), and
+pulse-beacon routes `Datum`, nothing narrower.
 
 **Serialization lives in pulse-data, not here.** Because pulse-data owns the types, it owns how a
 `Datum` becomes JSON, via its `DatumCodec`, in two forms:
@@ -343,10 +350,10 @@ Pulse ships a standard set of event types. Additional types, carrying
 application-domain-specific data, are contributed by external packages without modification to
 Pulse itself.
 
-An adopter defines them in its own namespace. Acme Ltd declares a provider named
-`com.acme.telemetry`, with its types beneath it, released on Acme's own schedule; Pulse requires
-every type to sit under its declaring provider's namespace, so names can neither collide nor be
-appropriated.
+An adopter defines them in a namespace it controls. Acme Ltd declares a provider named
+`com.acme.telemetry`, with its types beneath it, released on Acme's own schedule. Pulse checks that
+every type sits beneath its declaring provider and rejects conflicting registrations; it does not
+authenticate ownership of a namespace, so choosing one you control is the adopter's responsibility.
 
 A type is defined once, in a single schema. The package then names, in its own packaging
 configuration, both the class describing its types and the compiled bundle carrying them, filed

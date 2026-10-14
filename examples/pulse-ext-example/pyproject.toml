@@ -10,7 +10,9 @@ name = "pulse-ext-example"
 version = "0.1.0"
 description = "Example pulse-data extension: an ad-hoc ExtendedBar datum contributed via the DatumTypeProvider SPI."
 requires-python = ">=3.11"
-dependencies = ["pulse-data>=0.2,<0.3"]
+# pulse-data 0.4 is the current line. This was pinned at >=0.2,<0.3, which no longer
+# resolves at all; the documented --no-deps install had been hiding it.
+dependencies = ["pulse-data>=0.4,<0.5"]
 
 # The extension registers its provider through the SPI entry-point group. pulse-data's
 # composite registry discovers it and merges ExtendedBar into the type universe, with no

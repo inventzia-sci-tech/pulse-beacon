@@ -14,10 +14,10 @@ Pulse ships a standard set of event types. Additional types, carrying
 application-domain-specific data, are contributed by external packages without modification to
 Pulse itself.
 
-An adopter defines them in its own namespace. Acme Ltd declares a provider named
-`com.acme.telemetry`, with its types beneath it, released on Acme's own schedule; Pulse requires
-every type to sit under its declaring provider's namespace, so names can neither collide nor be
-appropriated.
+An adopter defines them in a namespace it controls. Acme Ltd declares a provider named
+`com.acme.telemetry`, with its types beneath it, released on Acme's own schedule. Pulse checks that
+every type sits beneath its declaring provider and rejects conflicting registrations; it does not
+authenticate ownership of a namespace, so choosing one you control is the adopter's responsibility.
 
 A type is defined once, in a single schema. The package then names, in its own packaging
 configuration, both the class describing its types and the compiled bundle carrying them, filed
@@ -88,6 +88,29 @@ must sit under its own provider's namespace, so no package can claim another's.
   - *the jar that carries them*, through the entry-point group `inventzia.pulse.jvm_classpath`, so
     Beacon puts it on the JVM classpath itself.
 
+  Verbatim, those are the two stanzas in `pyproject.toml`:
+
+  ```toml
+  [project.entry-points."inventzia.pulse.datum_types"]
+  ext = "inventzia.pulse.ext.schemas.provider:ExtDatumTypeProvider"
+
+  [project.entry-points."inventzia.pulse.jvm_classpath"]
+  ext = "inventzia.pulse.ext.jvm_classpath:jars"
+  ```
+
+  **The `jvm_classpath` value is a zero-argument callable returning jar paths, not a jar
+  filename.** `jars` is a function. That is deliberate: the only portable way for a package to
+  locate a jar inside its own installed wheel is `importlib.resources`, which has to execute. The
+  contract on that function:
+
+  - it must **not** start a JVM, import JPype, or touch the datum registry. Beacon calls it *before*
+    Java exists, and also when checking a JVM that is already running, so it must be safe to call
+    more than once and at either moment.
+  - it returns a sequence of paths that exist, or raises with an actionable message. Returning an
+    empty list to paper over a missing jar is the one thing not to do, because the Python types stay
+    registered and the failure resurfaces later as a type-universe mismatch.
+  - it should be cheap. It is a lookup, not a build step.
+
   Nothing in pulse-data or pulse-beacon is edited to add the type, and no application has to know
   where this package keeps its jar.
 - **Cross-language safety.** When the bridge starts the JVM, the type-universe gate compares the
@@ -138,6 +161,11 @@ Build the jar before installing. Once the package is installed it declares the j
 *any* Beacon run in that environment expects it to exist and fails with an actionable error if it
 does not. Installing first and building later leaves a window where unrelated runs fail.
 
+`--no-deps` is used because pulse-data and pulse-beacon are already present in the `pulse` env as
+editable installs from the sibling checkouts; without it, pip would try to resolve them from PyPI
+and could replace a checkout you are working on. It is a convenience of this dev layout, not a way
+to avoid declaring dependencies: the declared `pulse-data` range is real and must be kept current.
+
 **Pure-Java runs.** `HistoricExtendedBarExample` and `RealTimeExtendedBarExample` are ordinary
 `main`s. Note that automatic jar discovery is a feature of the **Python-host** bootstrap, which is
 what assembles the classpath there. A pure-Java run has no such bootstrap: you pass `-cp` yourself,
@@ -187,9 +215,13 @@ shape). The instant the JVM starts, **before a single event is allowed to flow**
 fingerprints are compared:
 
 - **Match** means both runtimes provably agree on every type, so the run proceeds.
-- **Mismatch** means one side knows a type the other does not. The gate stops immediately and names
-  the offending type, rather than letting the run start and then blow up (or silently misdecode)
-  later, when that type first appears mid-run.
+- **Mismatch** means the two registries are not identical. That covers a type one side knows and
+  the other does not, **and equally a type both sides know in different shapes**: the same
+  `TYPE_ID` generated from a changed schema, or at a different `TYPE_VERSION`, gives a different
+  fingerprint. The second case is the more dangerous one, because such a message would otherwise
+  decode without error into the wrong values. The gate stops immediately and names the offending
+  type, rather than letting the run start and then blow up, or silently misdecode, later when that
+  type first appears mid-run.
 
 Failing fast at startup turns a scary, data-dependent, mid-run failure into a boring, obvious error
 message at launch.
@@ -209,6 +241,15 @@ both:
 Both declarations live in the same `pyproject.toml`, next to each other, because they are two halves
 of one decision. An application calls plain `start_jvm()` and passes no paths.
 
+**This example is not a packaging recipe.** It is installed editable from a source checkout, and its
+contribution therefore locates a jar that Maven built in `java/target/`. Its `pyproject.toml` does
+**not** bundle that jar, so a wheel built from it would install without one. A package meant to be
+distributed must ship the jar as **package data**, the way pulse-beacon ships its own runtime jar
+(`inventzia.pulse.beacon._runtime`, declared under `[tool.setuptools.package-data]` and staged into
+the tree before the wheel is built), and should fail its own build if the jar is absent rather than
+publish a wheel that cannot work. What this example demonstrates is discovery and composition; the
+distributable-artifact half is a separate exercise.
+
 | | Python universe | Java universe | Gate |
 |---|---|---|---|
 | any run in the environment | core + ext | core + ext (jar discovered) | matches, runs |
@@ -226,6 +267,12 @@ pip uninstall -y pulse-ext-example
 Uninstalling is how you *choose* a tier, not how you repair a mismatch. This is how a real
 deployment behaves: an extension is present because its package is installed, and installing it
 configures both runtimes together.
+
+**Both take effect in a fresh process.** Installing or removing a package does not reconfigure a
+JVM that is already running, nor a datum-type registry that has already been built and frozen.
+Restart the process after changing what is installed. In a notebook that means restarting the
+kernel, which is also why `start_jvm()` checks a running JVM's classpath against the current
+contributions and tells you to restart rather than pretending to add to it.
 
 ## Historical note: when the jar was the application's problem
 
@@ -253,8 +300,12 @@ things were wrong with it:
 
 1. **It put a packaging detail into application code.** Every application, example and notebook had
    to know a filesystem path to another package's jar, which is the package's own business.
-2. **It did not compose.** A JVM's classpath is fixed at startup, so with each extension supplying
-   its own jar, two extensions were mutually exclusive: whichever started the JVM first won.
+2. **It required manual coordination.** Two extensions were not strictly mutually exclusive: a
+   caller who knew about both could pass both jars in one `extra_classpath`. But it was the
+   *caller's* job to know, and a JVM's classpath is fixed at startup, so whoever started it first
+   had to have assembled the complete list. No package could contribute on its own behalf.
+   Automatic collection removes that coordination: each package declares its own jar and Beacon
+   gathers them.
 3. **It made the safety gate report configuration errors.** The fingerprint gate exists to catch
    real schema drift. Its most frequent trigger was instead "you forgot a path", which teaches
    people to read a genuine safety mechanism as noise.
