@@ -8,6 +8,32 @@ A reference extension package: a self-contained, downstream project that defines
 ad-hoc datum type, `ExtendedBar`, and teaches both the Python and Java runtimes about it
 without any change to pulse-data or pulse-beacon.
 
+## Rationale
+
+Pulse ships a standard set of event types. Additional types, carrying
+application-domain-specific data, are contributed by external packages without modification to
+Pulse itself.
+
+An adopter defines them in its own namespace. Acme Ltd declares a provider named
+`com.acme.telemetry`, with its types beneath it, released on Acme's own schedule; Pulse requires
+every type to sit under its declaring provider's namespace, so names can neither collide nor be
+appropriated.
+
+A type is defined once, in a single schema. The package then names, in its own packaging
+configuration, both the class describing its types and the compiled bundle carrying them, filed
+under two section names that Pulse owns. Installing the package copies those declarations into
+standard metadata on disk. At startup Pulse asks for the sections bearing its own names, imports
+whatever is listed there, and configures both runtimes accordingly. A package is therefore found
+because it declared itself at install time, not because Pulse examined it; unrelated libraries
+declare nothing under those names and never appear.
+
+Operationally: a YAML schema; `regen.sh` generates the bindings for both languages;
+`pyproject.toml` declares the `datum_types` and `jvm_classpath` entry points; Java requires a
+`META-INF/services` entry; the jar must be built before installation.
+
+Before any data flows, Pulse verifies that the two runtimes agree on every type, and refuses to
+start if they do not.
+
 ## Why this exists
 
 **The problem.** Pulse ships a fixed set of core datum types (`CdfBar`, `TextMessage`,

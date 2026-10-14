@@ -335,6 +335,32 @@ two things in its own `pyproject.toml`, which are the two halves of adding a typ
 - **the jar that carries them**, through pulse-beacon's `inventzia.pulse.jvm_classpath` entry point,
   so the Python-host bootstrap puts it on the JVM classpath itself.
 
+#### Rationale
+
+Pulse ships a standard set of event types. Additional types, carrying
+application-domain-specific data, are contributed by external packages without modification to
+Pulse itself.
+
+An adopter defines them in its own namespace. Acme Ltd declares a provider named
+`com.acme.telemetry`, with its types beneath it, released on Acme's own schedule; Pulse requires
+every type to sit under its declaring provider's namespace, so names can neither collide nor be
+appropriated.
+
+A type is defined once, in a single schema. The package then names, in its own packaging
+configuration, both the class describing its types and the compiled bundle carrying them, filed
+under two section names that Pulse owns. Installing the package copies those declarations into
+standard metadata on disk. At startup Pulse asks for the sections bearing its own names, imports
+whatever is listed there, and configures both runtimes accordingly. A package is therefore found
+because it declared itself at install time, not because Pulse examined it; unrelated libraries
+declare nothing under those names and never appear.
+
+Operationally: a YAML schema; `regen.sh` generates the bindings for both languages;
+`pyproject.toml` declares the `datum_types` and `jvm_classpath` entry points; Java requires a
+`META-INF/services` entry; the jar must be built before installation.
+
+Before any data flows, Pulse verifies that the two runtimes agree on every type, and refuses to
+start if they do not.
+
 **Why it is separate, not another core example.** Its reason to exist is to prove that an *outside*
 package can extend the platform, so the arms-length separation is the demonstration: it keeps its
 own namespace (`inventzia.pulse.ext`), its own `pyproject.toml` and `pom.xml`, and its own release
