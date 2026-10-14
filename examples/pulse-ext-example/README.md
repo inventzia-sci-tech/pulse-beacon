@@ -49,13 +49,18 @@ data type," and the executable proof that the SPI holds across languages.
   `--provider-id com.inventzia.pulse.ext`, `--provider-class ExtDatumTypeProvider`, and
   `--package-version`) to emit the Python model, the Java record, and a generated
   `DatumTypeProvider` on each side, all baking a byte-identical schema manifest.
-- **Zero-touch discovery.** Python finds the provider via the entry-point group
-  `inventzia.pulse.datum_types`; Java finds it via `META-INF/services`. The core registry
-  seeds itself and merges whatever it discovers into one frozen composite. Nothing in
-  pulse-data or pulse-beacon is edited to add the type.
-- **Cross-language safety.** When the bridge starts the JVM with the extension jar on the
-  classpath, the type-universe gate compares the two composite fingerprints and refuses to
-  run if they disagree, before any event flows.
+- **Zero-touch discovery, both halves.** Adding a type has two halves, and this package declares
+  both in the same `pyproject.toml`:
+  - *the types*, through the entry-point group `inventzia.pulse.datum_types` (Python) and
+    `META-INF/services` (Java). The core registry seeds itself and merges whatever it discovers
+    into one frozen composite.
+  - *the jar that carries them*, through the entry-point group `inventzia.pulse.jvm_classpath`, so
+    Beacon puts it on the JVM classpath itself.
+
+  Nothing in pulse-data or pulse-beacon is edited to add the type, and no application has to know
+  where this package keeps its jar.
+- **Cross-language safety.** When the bridge starts the JVM, the type-universe gate compares the
+  two composite fingerprints and refuses to run if they disagree, before any event flows.
 - **It really flows.** A Python source gateway pushes `ExtendedBar` through the Java engine to
   a Python consumer, historical and real-time, with every field intact.
 
@@ -75,7 +80,7 @@ java/                                   Maven module: generated record + provide
 examples/extended_bar_run.py            shared run logic (Python)
 examples/historical_extended_bar_run.py runnable script, compressed time
 examples/realtime_extended_bar_run.py   runnable script, real time
-tests/                                  end-to-end regression (skips if the ext jar isn't built)
+tests/                                  end-to-end regression + the classpath contribution
 ```
 
 The two sides show the same `ExtendedBar` flow. The Python scripts are Python-host runs where the
@@ -91,15 +96,22 @@ Requires the `pulse` conda env (pulse-data and pulse-beacon installed).
 **Python-host runs** (Python components, embedded Java engine):
 
 ```bash
-pip install --no-deps -e .                        # register the Python entry point
-mvn -f java/pom.xml package                        # build the extension jar
+mvn -f java/pom.xml package                        # build the extension jar FIRST
+pip install --no-deps -e .                         # register the entry points
 python examples/historical_extended_bar_run.py     # compressed time
 python examples/realtime_extended_bar_run.py       # real time
 pytest tests/                                      # regression
 ```
 
+Build the jar before installing. Once the package is installed it declares the jar to Beacon, so
+*any* Beacon run in that environment expects it to exist and fails with an actionable error if it
+does not. Installing first and building later leaves a window where unrelated runs fail.
+
 **Pure-Java runs.** `HistoricExtendedBarExample` and `RealTimeExtendedBarExample` are ordinary
-`main`s. In Eclipse, import `java/` as a Maven project (it depends on `pulse-beacon-core`, which
+`main`s. Note that automatic jar discovery is a feature of the **Python-host** bootstrap, which is
+what assembles the classpath there. A pure-Java run has no such bootstrap: you pass `-cp` yourself,
+exactly as below, and Java's `ServiceLoader` then finds the provider inside whatever jars you
+listed. In Eclipse, import `java/` as a Maven project (it depends on `pulse-beacon-core`, which
 brings the engine, pulse-data, and the logging backend), open either class, and use *Run As* or
 *Debug As > Java Application* to step through it. From the command line:
 
@@ -117,18 +129,22 @@ Both entry points print `EXTENDED BAR RUN OK`. The Maven build needs `pulse-data
 
 To regenerate the bindings after editing the schema, run `./regen.sh`.
 
-## Running core vs. extension examples (the type-universe toggle)
+## How the two runtimes stay in step
 
-There is one thing that surprises people: **once this extension is installed, the *core*
-pulse-beacon examples stop running**, failing at startup with something like:
+Installing this extension configures **both** runtimes at once, so the core pulse-beacon examples
+go on working alongside it. That was not always so, and the mechanism that makes it so is worth
+understanding, because it is also what catches a genuine disagreement between the two sides.
+
+If the two sides ever do diverge, the run stops at startup with something like:
 
 ```
 TypeUniverseMismatch: cross-language datum-type universe mismatch (python=ad9d823d, java=64d6f05d):
   com.inventzia.pulse.ext.schemas.ExtendedBar: only in Python
 ```
 
-That is not a bug. It is the cross-language safety gate doing its job, and it is worth
-understanding because it explains how the two sides of the bridge stay honest.
+That is not a bug. It is the cross-language safety gate doing its job, and these days you should
+only see it if something is genuinely wrong, such as a jar built from a different schema than the
+installed Python package.
 
 ### Why the gate exists
 
@@ -147,49 +163,73 @@ fingerprints are compared:
 Failing fast at startup turns a scary, data-dependent, mid-run failure into a boring, obvious error
 message at launch.
 
-### Why installing this package no longer breaks the core examples
+### Both halves, declared together
 
-The Python side and the Java side are set by two switches. They used to be independent, and that
-asymmetry was the problem:
+The Python side and the Java side are set by two switches, and the point is that one install moves
+both:
 
-- **Python's** known types come from what is **installed** in the environment (global to the env).
-  Installing this package registers `ExtendedBar` through its `inventzia.pulse.datum_types` entry
-  point, so *every* Python run in that env sees `ExtendedBar`, including the core examples.
-- **Java's** known types come from **which jars the run puts on the JVM classpath**. Each run starts
-  its own fresh JVM. This used to be per-run and manual: an example had to locate the extension jar
-  and pass `start_jvm(extra_classpath=[...])`. A run that did not do so had a core-only JVM while
-  Python was still carrying the extension.
+- **Python's** known types come from what is **installed** in the environment. Installing this
+  package registers `ExtendedBar` through its `inventzia.pulse.datum_types` entry point, so every
+  Python run in that environment sees it.
+- **Java's** known types come from **which jars are on the JVM classpath**. This package declares
+  its jar through `inventzia.pulse.jvm_classpath`, so Beacon discovers it and the Java switch
+  follows the environment exactly as the Python one does.
 
-This package now also declares `inventzia.pulse.jvm_classpath`, so Beacon discovers the jar itself
-and the Java switch follows the environment exactly as the Python one does. Both halves of the
-contribution are declared in the same `pyproject.toml`, and an application calls plain
-`start_jvm()`.
+Both declarations live in the same `pyproject.toml`, next to each other, because they are two halves
+of one decision. An application calls plain `start_jvm()` and passes no paths.
 
 | | Python universe | Java universe | Gate |
 |---|---|---|---|
-| **before**, extension example | core + ext | core + ext (jar passed by hand) | matches, runs |
-| **before**, core example | core + ext (still installed) | core only (no jar passed) | mismatch, stops |
-| **now**, any run in the env | core + ext | core + ext (jar discovered) | matches, runs |
-
-The old failure was not that a core example used a smaller set of the *same* JVM: its JVM was
-core-only while Python still carried the extension, and the gate compares for exact equality in both
-directions, so "the extension is just a superset" was never a pass. Declaring the types without
-declaring the jar that carries them is what produced it.
+| any run in the environment | core + ext | core + ext (jar discovered) | matches, runs |
 
 ### Choosing a tier
 
 ```bash
-# install the extension: its types AND its jar are then part of every run in the env
+# install the extension: its types AND its jar become part of every run in the environment
 pip install --no-deps -e .
 
 # remove it: back to core only, on both sides together
 pip uninstall -y pulse-ext-example
 ```
 
-Uninstalling is now how you *choose* a tier, not how you repair a mismatch. This is how a real
+Uninstalling is how you *choose* a tier, not how you repair a mismatch. This is how a real
 deployment behaves: an extension is present because its package is installed, and installing it
 configures both runtimes together.
 
-Build the jar first (`mvn -f java/pom.xml package`); the contribution reports no jar if Maven has
-not run, and Beacon then fails on the type-universe mismatch, which names the missing types, rather
-than on a path, which would not.
+## Historical note: when the jar was the application's problem
+
+Worth recording, because older code and the git history both show the earlier shape.
+
+Originally only the *types* were declared by the package. The *jar carrying them* was supplied by
+the application, per run, by hand:
+
+```python
+_EXT_JAR = Path(__file__).resolve().parents[1] / "java" / "target" / "pulse-ext-example-0.1.0.jar"
+jpype_host.start_jvm(extra_classpath=[_EXT_JAR])      # the old way
+```
+
+So installing the package changed what Python knew but not what Java knew, and any run that did not
+pass the jar had a core-only JVM while Python still carried the extension:
+
+| | Python universe | Java universe | Gate |
+|---|---|---|---|
+| extension example (passed the jar) | core + ext | core + ext | matches, runs |
+| core example (passed nothing) | core + ext (still installed) | core only | mismatch, stops |
+
+This document used to present that as a "type-universe toggle" and told readers to uninstall the
+extension in order to run the core examples. It was a workaround documented as a feature. Four
+things were wrong with it:
+
+1. **It put a packaging detail into application code.** Every application, example and notebook had
+   to know a filesystem path to another package's jar, which is the package's own business.
+2. **It did not compose.** A JVM's classpath is fixed at startup, so with each extension supplying
+   its own jar, two extensions were mutually exclusive: whichever started the JVM first won.
+3. **It made the safety gate report configuration errors.** The fingerprint gate exists to catch
+   real schema drift. Its most frequent trigger was instead "you forgot a path", which teaches
+   people to read a genuine safety mechanism as noise.
+4. **The failure was late and misattributed.** You got a mismatch naming a *type* when the cause was
+   a *missing jar*, and only after the JVM had started.
+
+Note that the old failure was never "a core example used a smaller subset of the same JVM". Its JVM
+was core-only while Python carried the extension, and the gate compares for exact equality in both
+directions, so "the extension is just a superset" was never a pass.
