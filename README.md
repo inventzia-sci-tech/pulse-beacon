@@ -154,7 +154,8 @@ Key properties:
   CSV strings. The type set is open: through the `DatumTypeProvider` **SPI** (Service Provider
   Interface, a small contract a package implements and registers inside its own jar) an independent
   package can contribute its own datum types, which both runtimes discover at startup with no change
-  to pulse-data or pulse-beacon. For the full description see "Adding a new data type" in the
+  to pulse-data or pulse-beacon. A package declares the jar carrying those types alongside them, so
+  installing it configures both runtimes together and an application needs no classpath arguments. For the full description see "Adding a new data type" in the
   [pulse-data README](https://github.com/inventzia-sci-tech/pulse-data#adding-a-new-data-type), and
   the runnable [`pulse-ext-example`](https://github.com/inventzia-sci-tech/pulse-beacon/tree/main/examples/pulse-ext-example/) for a worked end-to-end example.
 - **Fault isolation in dispatch.** A throwing actor is caught, logged with its stack trace, and
@@ -252,11 +253,12 @@ Pulse ships **two tiers of examples**, aimed at two different questions.
   `src/inventzia/pulse/beacon/core/examples/`. Run them straight from this repo or from an installed
   wheel.
 - **The extension example** answers *"how do I add my own datum type?"* It is a standalone
-  downstream package that contributes a new type through the `DatumTypeProvider` SPI without
-  modifying pulse-data or pulse-beacon. Because that arms-length separation is the whole point, it
-  lives *outside* the `src` tree as its own buildable and installable package under
-  `examples/pulse-ext-example/`, and is deliberately not part of pulse-beacon's distribution or
-  default test run. You build and install it on demand.
+  downstream package that contributes a new type through the `DatumTypeProvider` SPI, and the jar
+  carrying it through the `inventzia.pulse.jvm_classpath` entry point, without modifying pulse-data
+  or pulse-beacon. Because that arms-length separation is the whole point, it lives *outside* the
+  `src` tree as its own buildable and installable package under `examples/pulse-ext-example/`, and
+  is deliberately not part of pulse-beacon's distribution or default test run. You build its jar and
+  install it on demand, in that order.
 
 In short: the core examples use the types Pulse ships; the extension example shows an adopter
 bringing their own. The rest of this section covers each tier in turn.
@@ -298,10 +300,13 @@ components over the in-process JPype bridge: `historic_run_jpype.py` (the histor
 Python actors and a Python source gateway) and `realtime_run_jpype.py` (the real-time heartbeat run,
 which also shows the reverse direction: a Python echo actor publishing back to a Java sink gateway).
 Both need the packages installed (`pip install -e ./pulse-data -e ./pulse-beacon`, no `PYTHONPATH`
-needed) and a Beacon classpath. `jpype_host` finds that classpath automatically: the wheel-bundled
-shaded **runtime jar** if present (build it with `./build-runtime-jar.sh`, which the wheel embeds so
-an installed `pip install pulse-beacon[jpype]` starts the JVM with no external jars), otherwise the
-Maven jars staged in `core/java/jars/` (see
+needed) and a Beacon classpath. `jpype_host` finds that classpath automatically, in three parts:
+the wheel-bundled shaded **runtime jar** if present (build it with `./build-runtime-jar.sh`, which
+the wheel embeds so an installed `pip install pulse-beacon[jpype]` starts the JVM with no external
+jars), otherwise the Maven jars staged in `core/java/jars/`; plus any jars **contributed by
+installed packages** through the `inventzia.pulse.jvm_classpath` entry point, discovered in a
+deterministic order and validated before the JVM starts, so a broken contribution names the package
+responsible instead of surfacing later as a missing class (see
 [the cross-language spec](https://github.com/inventzia-sci-tech/pulse-beacon/blob/main/docs/cross-language-python-inprocess.md)). The historical run's
 parity is also asserted as a pytest:
 
@@ -322,18 +327,22 @@ its production-facing bridge and exposes JEP for evaluation only.
 
 [`examples/pulse-ext-example/`](https://github.com/inventzia-sci-tech/pulse-beacon/tree/main/examples/pulse-ext-example/) is a self-contained downstream package
 that defines its own datum, `ExtendedBar` (a `CdfBar` with extra order-flow fields), from a single
-schema, and lets both runtimes discover it through the pulse-data extension SPI (a Python
-`inventzia.pulse.datum_types` entry point, a Java `META-INF/services` provider) with no change to
-pulse-data or pulse-beacon.
+schema, and lets both runtimes discover it with no change to pulse-data or pulse-beacon. It declares
+two things in its own `pyproject.toml`, which are the two halves of adding a type:
+
+- **the types**, through the pulse-data extension SPI: a Python `inventzia.pulse.datum_types` entry
+  point and a Java `META-INF/services` provider.
+- **the jar that carries them**, through pulse-beacon's `inventzia.pulse.jvm_classpath` entry point,
+  so the Python-host bootstrap puts it on the JVM classpath itself.
 
 **Why it is separate, not another core example.** Its reason to exist is to prove that an *outside*
 package can extend the platform, so the arms-length separation is the demonstration: it keeps its
 own namespace (`inventzia.pulse.ext`), its own `pyproject.toml` and `pom.xml`, and its own release
 cadence, and it stays out of pulse-beacon's `src` tree and Maven build. Installing it deliberately
-changes the datum-type universe (the cross-language gate then also requires the extension jar on the
-JVM classpath), which is exactly why it is not part of pulse-beacon's distribution or default test
-run. Fold it into `src` and `ExtendedBar` would ship as a de-facto core type, discovered on every
-install; keeping it out is what makes it a faithful extension.
+changes the datum-type universe on **both** sides at once, which is exactly why it is not part of
+pulse-beacon's distribution or default test run. Fold it into `src` and `ExtendedBar` would ship as
+a de-facto core type, discovered on every install; keeping it out is what makes it a faithful
+extension.
 
 **What is there.** Each operating mode has its own runnable entry point, in both languages, over a
 small shared core:
@@ -344,7 +353,11 @@ small shared core:
   shared logic in `extended_bar_run.py`.
 
 Each flows `ExtendedBar` through the Java engine end to end, after discovery establishes the type
-universe. Build and run instructions are in its
+universe. Build its jar before installing the package: once installed, it declares that jar to
+Beacon, so any Beacon run in that environment expects it to exist. Note too that automatic jar
+discovery serves the **Python-host** bootstrap, which is what assembles the classpath there; a
+pure-Java run passes `-cp` itself and `ServiceLoader` searches whatever jars it was given. Build and
+run instructions are in its
 [README](https://github.com/inventzia-sci-tech/pulse-beacon/blob/main/examples/pulse-ext-example/README.md); the high-level description of the SPI itself lives
 in the pulse-data README under "Adding a new data type".
 
@@ -372,6 +385,7 @@ any event flows (see the extension example above).
 | Examples | `core.examples.*` (historic, market-data, real-time) plus the standalone `pulse-ext-example` extension demo | ✅ |
 | Type registry + tagged codec | pulse-data composite `DatumTypeRegistry` (core provider + discovered `DatumTypeProvider` extensions) + `DatumCodec.toTaggedJson/fromTaggedJson` (both languages) | ✅ |
 | Extensible datum types (SPI) | `DatumTypeProvider` discovery (`ServiceLoader` / Python entry points), schema-manifest fingerprint, cross-language type-universe gate at engine startup | ✅ |
+| Extension jar discovery | `inventzia.pulse.jvm_classpath` entry points, so an installed package contributes its own jar to the JVM classpath and applications call `start_jvm()` with no paths | ✅ |
 | Cross-language Java half | `core.crosslanguage.CrossLanguageActor` / `CrossLanguageGateway` | ✅ |
 | Python `beacon.core` | actor/gateway bases, channel, dispatch, `Reporter`/`ComponentReporter` mirror, `CrossLanguageStreamer` | ✅ |
 | Python-host launchers | JPype historical run (`historic_run_jpype`, parity verified) and real-time run (`realtime_run_jpype`, mirrors `RealTimeHeartbeatExample`) | ✅ |
